@@ -1,0 +1,42 @@
+hamilton.cu: 原始版本 (2019/11/15~16)
+
+每個block最多有31個thread
+每個worker是由n-1個thread構成
+grid size限制為2的次方數，這導致一個block包含的worker數必須是2的次方數
+
+hamilton2.cu: (2019/11/16~17)
+
+每個block最多有512個thread
+一個block可以包含任意多個worker，不再限制是2的次方數
+
+ha2.cu: (2019/12/2~3)
+
+不再使用sum kernel
+把工作量按照選取的點數來排序，然後每種點的個數呼叫一次kernel，這樣就能減少一個worker的thread數量
+計算相同popcnt的下一個數
+每個block最多有1024個thread
+
+ha3.cu: (2019/12/3)
+
+只是ha2.cu的低階優化，用#pragma unroll
+sum = mod_sum(sum, qc[i] * (rr & 1), mod);
+rr >>= 1;
+
+ha4.cu: (2019/12/16~17)
+
+!. 把乘法 qc[i+sha] * (rr & 1) 換成 qc[i+sha] & 0LL-(rr & 1)
+2. #pragma unroll
+3. template 展開 + 迴圈展開
+4. 把計算個數的型別改成unsigned long long，發現沒有變慢很多
+5. 把adjacency matrix也改成unsigned long long，隨便改卻變慢
+6. 所以row沒有改成long long，把row變成兩個變數row和row2
+7. 更改輸入程式，數字間可以不輸入空格了
+8. 把陣列的範圍改大，以支援n>32
+9. 發現n=25,26會壞掉，所以加上除錯程序，才發現kernel使用太多的暫存器，於是又加上__launch_bounds__
+10. 把block size改成256，因為這樣在我的電腦上最快
+11. __ffsll
+
+ha5.cu : (2019/12/17)
+
+1. 加上k=1的kernel
+2. 把過大的工作量變小，目前是10000000
