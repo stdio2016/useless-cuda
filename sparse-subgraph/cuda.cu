@@ -1,6 +1,6 @@
 #include<iostream>
 
-typedef unsigned long long ulong;
+typedef uint64_t u64;
 
 /* kernel input:
  *   E: adjacency matrix as bit mask, (E[i]>>j & 1) is E(i,j)
@@ -8,7 +8,7 @@ typedef unsigned long long ulong;
  *   ans: output answer, ans[i*64+j] is j+1 sparsest subgraph from i-th block
  *   lv: tweak the kernel. must be 1 ~ n-4 and less than 7
 */
-__global__ void subgraph_kern(ulong *E, int n, int *ans, int lv) {
+__global__ void subgraph_kern(u64 *E, int n, int *ans, int lv) {
   const int max_lv = 7;
   int laneid = threadIdx.x & 31;
   int tid = threadIdx.x;
@@ -26,7 +26,7 @@ __global__ void subgraph_kern(ulong *E, int n, int *ans, int lv) {
   for (int i = 1; i < 16; i++) {
     bu[i] = __popc(E[31-__clz(i&-i)] & (i ^ i>>1));
   }
-  for (ulong t = gid; t < 1ull<<(n-(lv+4)); t += gsize) {
+  for (u64 t = gid; t < 1ull<<(n-(lv+4)); t += gsize) {
     int s0, s1, s2, s3, s4;
     s0 = s1 = s2 = s3 = s4 = 100000;
     // shift register, to reduce shared memory usage
@@ -34,7 +34,7 @@ __global__ void subgraph_kern(ulong *E, int n, int *ans, int lv) {
     for (int j = 0; j < max_lv; j++) sL[j] = 100000;
     for (int j = 0; j < max_lv; j++) sR[j] = 100000;
     // get subproblem
-    ulong actual = t<<(lv+4);
+    u64 actual = t<<(lv+4);
     good = 0;
     for (int j = lv+4; j < n; j++) {
       if (actual>>j & 1) {
@@ -44,7 +44,7 @@ __global__ void subgraph_kern(ulong *E, int n, int *ans, int lv) {
     good >>= 1;
 
     for (int i = 0; i < 1<<lv; i += 1) {
-      ulong mask = actual + ((i ^ i>>1) << 4);
+      u64 mask = actual + ((i ^ i>>1) << 4);
       if (i) {
         int z = 31-__clz(i&-i);
         int diff = __popcll(E[z+4] & mask);
@@ -112,7 +112,7 @@ __global__ void subgraph_kern(ulong *E, int n, int *ans, int lv) {
       g -= E0 + bu[15];
       if (g < s1) s1 = g;
     }
-    int b = __popc(actual);
+    int b = __popcll(actual);
     if (b) atomicMin(&s[b-1][laneid], sL[0]);
     atomicMin(&s[b+0][laneid], s0);
     atomicMin(&s[b+1][laneid], s1);
@@ -147,13 +147,13 @@ int mypopcnt(unsigned x) {
 
 int main() {
   int n;
-  ulong E[64];
+  u64 E[64];
   std::cin >> n;
-  if (n < 0 || n > 32) exit(1);
+  if (n < 0 || n > 64) exit(1);
   for(int i=0;i<n;i++){
-    ulong good = 0, y = 0;
+    u64 good = 0, y = 0;
     for(int j=0;j<n;j++){
-      ulong w;
+      u64 w;
       if (std::cin>>w) good = 1;
       y|=w<<j;
     }
@@ -170,11 +170,11 @@ int main() {
   ans = new int[64 * blocksize];
 
   if (n >= 5) {
-    ulong *gpu_E;
+    u64 *gpu_E;
     int *gpu_ans;
-    cudaMalloc(&gpu_E, sizeof(ulong) * 64);
+    cudaMalloc(&gpu_E, sizeof(u64) * 64);
     cudaMalloc(&gpu_ans, sizeof(int) * 64 * blocksize);
-    cudaMemcpy(gpu_E, E, sizeof(ulong) * 64, cudaMemcpyHostToDevice);
+    cudaMemcpy(gpu_E, E, sizeof(u64) * 64, cudaMemcpyHostToDevice);
     subgraph_kern<<<blocksize, 256>>>(gpu_E, n, gpu_ans, lv);
     cudaMemcpy(ans, gpu_ans, sizeof(int) * 64 * blocksize, cudaMemcpyDeviceToHost);
     for (int i = 1; i < blocksize; i++) {
