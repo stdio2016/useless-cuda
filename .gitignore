@@ -1,0 +1,11 @@
+# executable/object file
+*.exe
+*.exp
+*.lib
+*.obj
+
+a.out
+*.o
+
+# profiling file
+*.nsight-cuprof-report
