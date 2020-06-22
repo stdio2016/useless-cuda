@@ -85,16 +85,37 @@ __global__ void nqueen_kern(int lv, uint canplace[], struct SubP *works, int wor
   result[gid] = sol;
 }
 
-void nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2
-        , uint *canplace, std::vector<SubP> &works) {
+long long nqueen_compute_and_wait(int cut, int nblocks, int nworks, const SubP *works) {
+  long long *result = new long long[nblocks*256];
+  int flag = nblocks * 256;
+  long long sum = 0;
+
+  cudaMemcpy(gpu_flag, &flag, sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(gpu_works, works, nworks * sizeof(SubP), cudaMemcpyHostToDevice);
+  nqueen_kern<<<nblocks, 256>>>(cut, gpu_canplace, gpu_works, nworks,
+      gpu_flag, gpu_result);
+  cudaDeviceSynchronize();
+  cudaMemcpy(result, gpu_result, nblocks*256 * sizeof(long long), cudaMemcpyDeviceToHost);
+
+  for (int i = 0; i < nblocks*256; i++) {
+    sum += result[i];
+  }
+
+  delete[] result;
+  return sum;
+}
+
+long long nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2
+        , uint *canplace, std::vector<SubP> &works, int nblocks, int nworks) {
   uint s0[32], s1[32], s2[32], s3[32];
-  if (lv < cut) return ;
+  if (lv < cut) return 0;
   int i = lv-1;
   uint choice = canplace[lv-1] & ~(mid | diag1 | diag2);
   s0[i] = choice;
   s1[i] = mid;
   s2[i] = diag1;
   s3[i] = diag2;
+  long long sum = 0;
   while (i < lv) {
     choice = s0[i];
     mid = s1[i];
@@ -106,6 +127,10 @@ void nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2
     else if (i == cut-1) {
       SubP p = {mid, diag1, diag2};
       works.push_back(p);
+      if (works.size() >= nworks) {
+        sum += nqueen_compute_and_wait(cut, nblocks, nworks, works.data());
+        works.clear();
+      }
       i++;
     }
     else {
@@ -121,41 +146,19 @@ void nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2
       if (choice == 0) i += 1;
     }
   }
+  sum += nqueen_compute_and_wait(cut, nblocks, works.size(), works.data());
+  return sum;
 }
 
-long long nqueen_cuda(int n, unsigned canplace[]) {
+long long nqueen_cuda(int n, unsigned canplace[], int nblocks, int nworks) {
   std::vector<SubP> works;
   works.reserve(10000*32);
   // create subproblems
   int cut = n - 5;
   if (cut < 2) cut = 2;
   if (cut > 12) cut = 12;
-  nqueen_gen(n, cut, 0, 0, 0, canplace, works);
-  //printf("%d\n", (int)works.size());
-
-  long long *result = new long long[25*256];
-  long long sum = 0;
-  int ptr = 0;
   cudaMemcpy(gpu_canplace, canplace, sizeof(uint) * 32, cudaMemcpyHostToDevice);
-  while (ptr < works.size()) {
-    int nxt = ptr + gpu_workCount;
-    if (nxt > works.size()) nxt = works.size();
-    int flag = 25*256;
-
-    cudaMemcpy(gpu_flag, &flag, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(gpu_works, works.data()+ptr, (nxt-ptr) * sizeof(SubP), cudaMemcpyHostToDevice);
-    nqueen_kern<<<25, 256>>>(cut, gpu_canplace, gpu_works, nxt - ptr,
-        gpu_flag, gpu_result);
-    cudaMemcpy(result, gpu_result, 25*256 * sizeof(long long), cudaMemcpyDeviceToHost);
-
-    for (int i = 0; i < 25*256; i++) {
-        sum += result[i];
-    }
-
-    ptr = nxt;
-  }
-  delete[] result;
-  return sum;
+  return nqueen_gen(n, cut, 0, 0, 0, canplace, works, nblocks, nworks);
 }
 
 int main(int argc, char *argv[]) {
@@ -174,11 +177,15 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  gpu_workCount = 25 * 256 * 30;
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, 0);
+
+  int nblocks = prop.multiProcessorCount * 4;
+  gpu_workCount = nblocks * 256 * 30;
   cudaMalloc(&gpu_works, sizeof(SubP) * gpu_workCount);
   cudaMalloc(&gpu_flag, sizeof(int));
   cudaMalloc(&gpu_canplace, sizeof(uint) * 32);
-  cudaMalloc(&gpu_result, sizeof(long long) * 25 * 256);
+  cudaMalloc(&gpu_result, sizeof(long long) * nblocks * 256);
 
   while (fscanf(filein, "%d", &n) == 1) {
     fgets(buf, 100, filein);
@@ -193,7 +200,7 @@ int main(int argc, char *argv[]) {
     }
 
     long long ans = 0;
-    ans = nqueen_cuda(n, canplace);
+    ans = nqueen_cuda(n, canplace, nblocks, gpu_workCount);
     printf("Case #%d: %lld\n", T, ans);
   }
   return 0;
