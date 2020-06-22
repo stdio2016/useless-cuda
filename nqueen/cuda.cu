@@ -85,15 +85,18 @@ __global__ void nqueen_kern(int lv, uint canplace[], struct SubP *works, int wor
   result[gid] = sol;
 }
 
-long long nqueen_compute_and_wait(int cut, int nblocks, int nworks, const SubP *works) {
-  long long *result = new long long[nblocks*256];
+void nqueen_send_gpu(int cut, int nblocks, int nworks, const SubP *works) {
   int flag = nblocks * 256;
-  long long sum = 0;
-
   cudaMemcpy(gpu_flag, &flag, sizeof(int), cudaMemcpyHostToDevice);
   cudaMemcpy(gpu_works, works, nworks * sizeof(SubP), cudaMemcpyHostToDevice);
   nqueen_kern<<<nblocks, 256>>>(cut, gpu_canplace, gpu_works, nworks,
-      gpu_flag, gpu_result);
+    gpu_flag, gpu_result);
+}
+
+long long nqueen_wait_compute(int nblocks) {
+  long long *result = new long long[nblocks*256];
+  long long sum = 0;
+
   cudaDeviceSynchronize();
   cudaMemcpy(result, gpu_result, nblocks*256 * sizeof(long long), cudaMemcpyDeviceToHost);
 
@@ -116,6 +119,7 @@ long long nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2
   s2[i] = diag1;
   s3[i] = diag2;
   long long sum = 0;
+  int lastWork = 0;
   while (i < lv) {
     choice = s0[i];
     mid = s1[i];
@@ -128,7 +132,11 @@ long long nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2
       SubP p = {mid, diag1, diag2};
       works.push_back(p);
       if (works.size() >= nworks) {
-        sum += nqueen_compute_and_wait(cut, nblocks, nworks, works.data());
+        if (lastWork) {
+          sum += nqueen_wait_compute(nblocks);
+        }
+        nqueen_send_gpu(cut, nblocks, nworks, works.data());
+        lastWork = nworks;
         works.clear();
       }
       i++;
@@ -146,7 +154,11 @@ long long nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2
       if (choice == 0) i += 1;
     }
   }
-  sum += nqueen_compute_and_wait(cut, nblocks, works.size(), works.data());
+  if (lastWork) {
+    sum += nqueen_wait_compute(nblocks);
+  }
+  nqueen_send_gpu(cut, nblocks, works.size(), works.data());
+  sum += nqueen_wait_compute(nblocks);
   return sum;
 }
 
