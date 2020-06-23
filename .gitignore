@@ -9,3 +9,6 @@ a.out
 
 # profiling file
 *.nsight-cuprof-report
+
+# python cache
+__pycache__
