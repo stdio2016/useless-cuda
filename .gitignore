@@ -3,8 +3,9 @@
 *.exp
 *.lib
 *.obj
+*.pdb
 
-a.out
+*.out
 *.o
 
 # profiling file
