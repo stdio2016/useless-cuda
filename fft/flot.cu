@@ -1,8 +1,14 @@
 #include <stdio.h>
 #include <cmath>
+
+//const double pi2 = 3.14159265358979323846264338327950288 * 2.0;
+#ifdef __CUDA_ARCH__
+__device__
+#endif
+const double pi2 = 3.14159265358979323846264338327950288 * 2.0;
+
 // reference:
 // Andrew Thall. Extended-Precision Floating-Point Numbers for GPU Computation.
-
 __device__ float2 Re(float4 a) {
     return make_float2(a.x, a.y);
 }
@@ -94,6 +100,38 @@ __global__ void fft_permute(float4 *din, float4 *dout, int width) {
    dout[me + (revpos & mask)] = val;
 }
 
+__global__ void fft_permute_small(float4 *din, float4 *dout, int width) {
+    __shared__ float4 buf[1024+32];
+    if (width < 1 || width > 10) return ;
+    int tx = threadIdx.x, off;
+    int bx = blockIdx.x;
+    unsigned me = bx * blockDim.x + tx;
+    unsigned rev = __brev(tx) >> (32-width) | tx & (~0<<width);
+    float4 val = din[me];
+    off = tx>>5;
+    buf[tx+off] = val;
+    __syncthreads();
+    off = rev>>5;
+    val = buf[rev+off];
+    dout[me] = val;
+}
+
+__global__ void fft_transpose(float4 *din, float4 *dout, int width, int height, float4 *twiddle, unsigned mask) {
+    __shared__ float4 buf[1024+32];
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int bx = blockIdx.x, by = blockIdx.y;
+    int x = 32 * bx;
+    int y = 32 * by;
+    if (tx+x < width && ty+y < height) {
+        int idx = (tx + x) + (ty + y) * width;
+        buf[tx + ty*33] = CMul(din[idx], twiddle[idx & mask]);
+    }
+    __syncthreads();
+    if (ty+x < width && tx+y < height) {
+        dout[(tx + y) + (ty + x) * height] = buf[ty + tx*33];
+    }
+}
+
 __device__ float4 shflxor(float4 a, int mask) {
     float4 b;
     b.x = __shfl_xor_sync(0xffffffff, a.x, mask, 32);
@@ -103,11 +141,12 @@ __device__ float4 shflxor(float4 a, int mask) {
     return b;
 }
 
-__global__ void fft_a(float4 *din, float4 *dout, float4 *trig) {
+__global__ void fft_a(float4 *din, float4 *dout, float4 *trig, int width) {
     int tid = threadIdx.x, bid = blockIdx.x;
     int bs = blockDim.x;
     int parity;
     float4 me, him;
+    if (width < 1 || width > 10) return ;
 
     parity = 1 - (tid&1)*2;
     me = din[tid + bs * bid];
@@ -115,7 +154,7 @@ __global__ void fft_a(float4 *din, float4 *dout, float4 *trig) {
     me.x *= parity, me.y *= parity, me.z *= parity, me.w *= parity;
     me = CSum(me, him);
 
-    for (int iter = 1; iter < 5; iter++) {
+    for (int iter = 1; iter < min(5,width); iter++) {
         int ord = tid & ((2<<iter)-1);
         parity = 1 - (ord>>iter)*2;
         me = CMul(me, trig[ord+(2<<iter)]);
@@ -124,7 +163,7 @@ __global__ void fft_a(float4 *din, float4 *dout, float4 *trig) {
         me = CSum(me, him);
     }
     __shared__ float4 share[1024];
-    for (int iter = 5; iter < 10; iter++) {
+    for (int iter = 5; iter < width; iter++) {
         __syncthreads();
         int ord = tid & ((2<<iter)-1);
         parity = 1 - (ord>>iter)*2;
@@ -138,21 +177,34 @@ __global__ void fft_a(float4 *din, float4 *dout, float4 *trig) {
     dout[tid + bs * bid] = me;
 }
 
+__global__ void sintable(float4 *dout) {
+    int Nx = blockDim.x * gridDim.x;
+    int Ny = blockDim.y * gridDim.y;
+    int tx = blockDim.x * blockIdx.x + threadIdx.x;
+    int ty = blockDim.y * blockIdx.y + threadIdx.y;
+    double theta = pi2 * (1.0f/(Nx*Ny)) * (tx*ty);
+    double co_ = cos(theta), si_ = sin(theta);
+    float4 o;
+    o.x = co_;
+    o.y = co_ - o.x;
+    o.z = si_;
+    o.w = si_ - o.z;
+    dout[tx + ty * Nx] = o;
+}
+
 int main() {
     float4 *mydata;
-    float4 *din, *dout, *trig;
-    int width = 18;
+    float4 *din, *dout, *trig, *twiddle;
+    int width = 20;
     cudaMallocHost(&mydata, (sizeof(float4)*2)<<width);
     cudaMalloc(&din, sizeof(float4)<<width);
     cudaMalloc(&dout, sizeof(float4)<<width);
-    cudaMalloc(&trig, sizeof(float4)<<width);
-    for (int i = 0; i < width-1; i++) {
-        const double pi2 = 3.14159265358979323846264338327950288 * 2.0;
-        #pragma omp parallel for if (i > 10)
+    cudaMalloc(&trig, sizeof(float4) * 2048);
+    cudaMalloc(&twiddle, sizeof(float4)<<width);
+    for (int i = 0; i < 10; i++) {
         for (int ord = 0; ord < 1<<i; ord++) {
             mydata[ord + (2<<i)] = make_float4(1, 0, 0, 0);
         }
-        #pragma omp parallel for if (i > 10)
         for (int ord = 1<<i; ord < 2<<i; ord++) {
             double frag = (double)ord / (2<<i) - 0.5;
             double si_ = sin(pi2 * frag);
@@ -165,16 +217,34 @@ int main() {
             mydata[ord + (2<<i)] = aa;
         }
     }
-    cudaMemcpy(trig, mydata, sizeof(float4)<<width, cudaMemcpyHostToDevice);
+    cudaMemcpy(trig, mydata, sizeof(float4) * 2048, cudaMemcpyHostToDevice);
+    sintable<<<dim3(4, 1<<(width-10)), 256>>>(twiddle);
     for (int i = 0; i < 2<<width; i++) mydata[i] = make_float4(0, 0, 0, 0);
-    mydata[1<<8].x = 1;
+    mydata[1].x = 1;
     cudaMemcpy(din, mydata, sizeof(float4)<<width, cudaMemcpyHostToDevice);
-    fft_permute<<<1<<(width-10), dim3(32, 32)>>>(din, dout, width);
-    fft_a<<<1<<(width-10), 1024>>>(dout, din, trig);
+    if (width >= 15)
+       fft_transpose<<<dim3(1<<(width-15),32), dim3(32,32)>>>(din, dout, 1<<(width-10), 1024, twiddle, 0);
+    else
+       fft_transpose<<<dim3(1,32), dim3(32,32)>>>(din, dout, 1<<(width-10), 1024, twiddle, 0);
+    fft_permute_small<<<1<<(width-10), 1024>>>(dout, din, 10);
+    fft_a<<<1<<(width-10), 1024>>>(din, dout, trig, 10);
+
+    if (width >= 15)
+        fft_transpose<<<dim3(32,1<<(width-15)), dim3(32,32)>>>(dout, din, 1024, 1<<(width-10), twiddle, (1<<width)-1);
+    else
+        fft_transpose<<<dim3(32,1), dim3(32,32)>>>(dout, din, 1024, 1<<(width-10), twiddle, (1<<width)-1);
+    fft_permute_small<<<1<<(width-10), 1024>>>(din, dout, min(10, width-10));
+    fft_a<<<1<<(width-10), 1024>>>(dout, din, trig, min(10, width-10));
+
+    if (width >= 15)
+       fft_transpose<<<dim3(1<<(width-15),32), dim3(32,32)>>>(din, dout, 1<<(width-10), 1024, twiddle, 0);
+    else
+       fft_transpose<<<dim3(1,32), dim3(32,32)>>>(din, dout, 1<<(width-10), 1024, twiddle, 0);
     cudaDeviceSynchronize();
-    cudaMemcpy(mydata, din, sizeof(float4)<<width, cudaMemcpyDeviceToHost);
+    cudaMemcpy(mydata, dout, sizeof(float4)<<width, cudaMemcpyDeviceToHost);
     for (int i = 0; i < 32; i++) {
-        printf("%f + %f i\n", mydata[i].x + mydata[i].y, mydata[i].z + mydata[i].w);
+        int y = i+32;
+        printf("%f + %f i\n", mydata[y].x + mydata[y].y, mydata[y].z + mydata[y].w);
     }
     return 0;
 }
