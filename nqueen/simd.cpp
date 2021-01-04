@@ -126,7 +126,7 @@ void next_step(SubProbs &a, SubProbs &b, int num, uint canplace) {
 int main() {
   __m256i *table = build_shuffle_table();
   int n = 0;
-  int page = 512;
+  int page = 256;
   scanf("%d", &n);
   std::vector<SubProbs> probs;
   for (int i = 0; i <= n; i++) {
@@ -170,15 +170,16 @@ int main() {
     probs[lv+1].cnt = rem2 + prev;
     //printf("lv=%d added=%d rem=%d depleted=%d cnt=%d,%d\n", lv, now-prev, rem, depleted, probs[lv].cnt, probs[lv+1].cnt);
 
-    if (probs[lv+1].cnt >= page || lv+1 == depleted) {
+    if (probs[lv].cnt < page && lv > depleted) lv -= 1;
+    else while (probs[lv+1].cnt >= page || lv+1 == depleted) {
       lv += 1;
       if (lv == n-1) {
         ans += probs[n-1].cnt;
         probs[n-1].cnt = 0;
-        lv = n-1;
+        lv -= 1;
+        break;
       }
     }
-    else if (probs[lv].cnt < page && lv > depleted) lv -= 1;
   }
   double t1 = tm.getRunTime();
   
