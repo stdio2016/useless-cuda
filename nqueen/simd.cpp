@@ -37,7 +37,7 @@ struct SubProbs {
 };
 
 __m256i *build_shuffle_table() {
-  __m256i *shuffle_table = (__m256i*)_aligned_malloc(256 * sizeof(__m256), sizeof(__m256));
+  __m256i *shuffle_table = (__m256i*)_mm_malloc(256 * sizeof(__m256), sizeof(__m256));
   for (int i = 0; i < 256; i++) {
     int pp[8] = {0};
     int cnt = 0;
