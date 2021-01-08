@@ -82,9 +82,10 @@ int compaction(int n, uint *mask, uint *dat) {
   return cnt;
 }
 
-void next_step(SubProbs &a, SubProbs &b, int num, uint canplace) {
+int next_step(SubProbs &a, SubProbs &b, int num, uint canplace, const __m256i *shuffle_table) {
   int off = b.cnt;
   int i;
+  int rem = 0;
   __m256i can = _mm256_set1_epi32(canplace);
   for (i = 0; i+8 <= num; i += 8) {
     __m256i cho = _mm256_loadu_si256((__m256i*)&a.choice[i]);
@@ -92,16 +93,39 @@ void next_step(SubProbs &a, SubProbs &b, int num, uint canplace) {
     __m256i d1 = _mm256_loadu_si256((__m256i*)&a.diag1[i]);
     __m256i d2 = _mm256_loadu_si256((__m256i*)&a.diag2[i]);
     __m256i lowbit = _mm256_and_si256(cho, _mm256_sub_epi32(_mm256_setzero_si256(), cho));
-    mid = _mm256_or_si256(mid, lowbit);
-    d1 = _mm256_slli_epi32(_mm256_or_si256(d1, lowbit), 1);
-    d2 = _mm256_srli_epi32(_mm256_or_si256(d2, lowbit), 1);
+    __m256i nxt_mid = _mm256_or_si256(mid, lowbit);
+    __m256i nxt_d1 = _mm256_slli_epi32(_mm256_or_si256(d1, lowbit), 1);
+    __m256i nxt_d2 = _mm256_srli_epi32(_mm256_or_si256(d2, lowbit), 1);
     cho = _mm256_sub_epi32(cho, lowbit);
-    __m256i cho2 = _mm256_andnot_si256(_mm256_or_si256(_mm256_or_si256(mid, d1), d2), can);
-    _mm256_storeu_si256((__m256i*)&a.choice[i], cho);
-    _mm256_storeu_si256((__m256i*)&b.choice[off+i], cho2);
-    _mm256_storeu_si256((__m256i*)&b.mid[off+i], mid);
-    _mm256_storeu_si256((__m256i*)&b.diag1[off+i], d1);
-    _mm256_storeu_si256((__m256i*)&b.diag2[off+i], d2);
+    __m256i nxt_cho = _mm256_andnot_si256(_mm256_or_si256(_mm256_or_si256(nxt_mid, nxt_d1), nxt_d2), can);
+    
+    __m256i zer = _mm256_cmpeq_epi32(nxt_cho, _mm256_setzero_si256());
+    int sel = _mm256_movemask_ps((__m256)zer);
+    __m256i idx = _mm256_load_si256(&shuffle_table[sel]);
+    nxt_cho = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_cho, idx);
+    nxt_mid = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_mid, idx);
+    nxt_d1 = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_d1, idx);
+    nxt_d2 = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_d2, idx);
+    
+    _mm256_storeu_si256((__m256i*)&b.choice[off], nxt_cho);
+    _mm256_storeu_si256((__m256i*)&b.mid[off], nxt_mid);
+    _mm256_storeu_si256((__m256i*)&b.diag1[off], nxt_d1);
+    _mm256_storeu_si256((__m256i*)&b.diag2[off], nxt_d2);
+    off += __builtin_popcount(255-sel);
+    
+    zer = _mm256_cmpeq_epi32(cho, _mm256_setzero_si256());
+    sel = _mm256_movemask_ps((__m256)zer);
+    idx = _mm256_load_si256(&shuffle_table[sel]);
+    cho = (__m256i)_mm256_permutevar8x32_ps((__m256)cho, idx);
+    mid = (__m256i)_mm256_permutevar8x32_ps((__m256)mid, idx);
+    d1 = (__m256i)_mm256_permutevar8x32_ps((__m256)d1, idx);
+    d2 = (__m256i)_mm256_permutevar8x32_ps((__m256)d2, idx);
+    
+    _mm256_storeu_si256((__m256i*)&a.choice[rem], cho);
+    _mm256_storeu_si256((__m256i*)&a.mid[rem], mid);
+    _mm256_storeu_si256((__m256i*)&a.diag1[rem], d1);
+    _mm256_storeu_si256((__m256i*)&a.diag2[rem], d2);
+    rem += __builtin_popcount(255-sel);
   }
   for (; i < num; i++) {
     uint cho = a.choice[i];
@@ -109,18 +133,28 @@ void next_step(SubProbs &a, SubProbs &b, int num, uint canplace) {
     uint d1 = a.diag1[i];
     uint d2 = a.diag2[i];
     uint lowbit = cho & -cho;
-    mid = mid | lowbit;
-    d1 = (d1 | lowbit) << 1;
-    d2 = (d2 | lowbit) >> 1;
+    uint nxt_mid = mid | lowbit;
+    uint nxt_d1 = (d1 | lowbit) << 1;
+    uint nxt_d2 = (d2 | lowbit) >> 1;
     cho = cho - lowbit;
-    uint cho2 = canplace & ~(mid | d1 | d2);
-    a.choice[i] = cho;
-    b.choice[off+i] = cho2;
-    b.mid[off+i] = mid;
-    b.diag1[off+i] = d1;
-    b.diag2[off+i] = d2;
+    uint nxt_cho = canplace & ~(nxt_mid | nxt_d1 | nxt_d2);
+    if (cho) {
+      a.choice[rem] = cho;
+      a.mid[rem] = mid;
+      a.diag1[rem] = d1;
+      a.diag2[rem] = d2;
+      rem++;
+    }
+    if (nxt_cho) {
+      b.choice[off] = nxt_cho;
+      b.mid[off] = nxt_mid;
+      b.diag1[off] = nxt_d1;
+      b.diag2[off] = nxt_d2;
+      off++;
+    }
   }
-  b.cnt += num;
+  b.cnt = off;
+  return rem;
 }
 
 int main() {
@@ -147,12 +181,7 @@ int main() {
     int has = probs[lv].cnt;
     if (page < has) has = page;
     int prev = probs[lv+1].cnt;
-    next_step(probs[lv], probs[lv+1], has, (1<<n)-1);
-    int now = probs[lv+1].cnt;
-    avx2_compaction(has, probs[lv].choice.data(), probs[lv].mid.data(), table);
-    avx2_compaction(has, probs[lv].choice.data(), probs[lv].diag1.data(), table);
-    avx2_compaction(has, probs[lv].choice.data(), probs[lv].diag2.data(), table);
-    int rem = avx2_compaction(has, probs[lv].choice.data(), probs[lv].choice.data(), table);
+    int rem = next_step(probs[lv], probs[lv+1], has, (1<<n)-1, table);
     int all = probs[lv].cnt;
     if (all > has) {
       std::copy(&probs[lv].mid[has], &probs[lv].mid[all], &probs[lv].mid[rem]);
@@ -163,11 +192,6 @@ int main() {
     probs[lv].cnt = rem + all - has;
     if (probs[lv].cnt == 0 && lv == depleted) depleted++;
 
-    avx2_compaction(now-prev, &probs[lv+1].choice[prev], &probs[lv+1].mid[prev], table);
-    avx2_compaction(now-prev, &probs[lv+1].choice[prev], &probs[lv+1].diag1[prev], table);
-    avx2_compaction(now-prev, &probs[lv+1].choice[prev], &probs[lv+1].diag2[prev], table);
-    int rem2 = avx2_compaction(now-prev, &probs[lv+1].choice[prev], &probs[lv+1].choice[prev], table);
-    probs[lv+1].cnt = rem2 + prev;
     //printf("lv=%d added=%d rem=%d depleted=%d cnt=%d,%d\n", lv, now-prev, rem, depleted, probs[lv].cnt, probs[lv+1].cnt);
 
     if (probs[lv].cnt < page && lv > depleted) lv -= 1;
