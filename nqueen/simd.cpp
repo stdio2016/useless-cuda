@@ -157,23 +157,12 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint canplace, const __m256i *s
   return rem;
 }
 
-int main() {
-  __m256i *table = build_shuffle_table();
-  int n = 0;
-  int page = 256;
-  scanf("%d", &n);
+int solve(int n, const uint *mask, SubProbs in, int page, const __m256i *table) {
   std::vector<SubProbs> probs;
-  for (int i = 0; i <= n; i++) {
+  probs.push_back(in);
+  for (int i = 1; i <= n; i++) {
     probs.push_back(SubProbs(page * 2));
   }
-  probs[0].cnt = 1;
-  probs[0].choice[0] = (1<<n)-1;
-  probs[0].mid[0] = 0;
-  probs[0].diag1[0] = 0;
-  probs[0].diag2[0] = 0;
-  Timing tm;
-  
-  tm.getRunTime();
   int ans = 0;
   int lv = 0;
   int depleted = 0;
@@ -181,7 +170,7 @@ int main() {
     int has = probs[lv].cnt;
     if (page < has) has = page;
     int prev = probs[lv+1].cnt;
-    int rem = next_step(probs[lv], probs[lv+1], has, (1<<n)-1, table);
+    int rem = next_step(probs[lv], probs[lv+1], has, mask[lv+1], table);
     int all = probs[lv].cnt;
     if (all > has) {
       std::copy(&probs[lv].mid[has], &probs[lv].mid[all], &probs[lv].mid[rem]);
@@ -205,7 +194,75 @@ int main() {
       }
     }
   }
+  return ans;
+}
+
+long long nqueen_avx2(int n, const uint *mask, const __m256i *shuffle_table) {
+  SubProbs gen(1);
+  gen.cnt = 1;
+  gen.choice[0] = mask[0];
+  gen.mid[0] = 0;
+  gen.diag1[0] = 0;
+  gen.diag2[0] = 0;
+  return solve(n, mask, gen, 256, shuffle_table);
+}
+
+long long nqueen_parallel_avx2(int n, const uint *mask, const __m256i *shuffle_table) {
+  SubProbs gen(1);
+  gen.cnt = 1;
+  gen.choice[0] = mask[0];
+  gen.mid[0] = 0;
+  gen.diag1[0] = 0;
+  gen.diag2[0] = 0;
+  int unroll_lv = 0;
+  while (unroll_lv < n-7 && gen.cnt < 1000) {
+    unroll_lv += 1;
+    SubProbs gen2(gen.cnt * n);
+    gen2.cnt = 0;
+    int rem = gen.cnt;
+    while (rem > 0) {
+      rem = next_step(gen, gen2, gen.cnt, mask[unroll_lv], shuffle_table);
+      gen.cnt = rem;
+    }
+    std::swap(gen, gen2);
+  }
+  if (unroll_lv >= n-7) {
+    // too little remaining works
+    return solve(n-unroll_lv, &mask[unroll_lv], gen, 256, shuffle_table);;
+  }
+
+  long long ans = 0;
+  #pragma omp parallel reduction(+:ans)
+  {
+    SubProbs me(0);
+    me.cnt = 0;
+    // do not change schedule
+    #pragma omp for schedule(static, 1)
+    for (int i = 0; i < gen.cnt; i++) {
+      me.cnt += 1;
+      me.choice.push_back(gen.choice[i]);
+      me.mid.push_back(gen.mid[i]);
+      me.diag1.push_back(gen.diag1[i]);
+      me.diag2.push_back(gen.diag2[i]);
+    }
+    
+    ans += solve(n-unroll_lv, &mask[unroll_lv], me, 256, shuffle_table);
+    //printf("ans = %d\n", ans);
+  }
+  return ans;
+}
+
+int main() {
+  __m256i *shuffle_table = build_shuffle_table();
+  int n = 0;
+  int page = 256;
+  scanf("%d", &n);
+  std::vector<uint> mask(n);
+  for (int i = 0; i < n; i++) {
+    mask[i] = (1<<n)-1;
+  }
+  Timing tm;
+  long long ans = nqueen_parallel_avx2(n, mask.data(), shuffle_table);
   double t1 = tm.getRunTime();
-  
-  printf("time=%f ans=%d\n", t1, ans);
+  printf("time=%f ans=%lld\n", t1, ans);
 }
