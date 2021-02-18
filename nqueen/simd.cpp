@@ -3,6 +3,7 @@
 #include <vector>
 #include <chrono>
 #include <algorithm>
+#include <cstring>
 
 typedef unsigned int uint;
 class Timing {
@@ -208,6 +209,9 @@ long long nqueen_avx2(int n, const uint *mask, const __m256i *shuffle_table) {
 }
 
 long long nqueen_parallel_avx2(int n, const uint *mask, const __m256i *shuffle_table) {
+  if (n == 1) { // boundary/trivial case
+    return (mask[0]&1) == 1;
+  }
   SubProbs gen(1);
   gen.cnt = 1;
   gen.choice[0] = mask[0];
@@ -252,17 +256,38 @@ long long nqueen_parallel_avx2(int n, const uint *mask, const __m256i *shuffle_t
   return ans;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
   __m256i *shuffle_table = build_shuffle_table();
   int n = 0;
   int page = 256;
-  scanf("%d", &n);
-  std::vector<uint> mask(n);
-  for (int i = 0; i < n; i++) {
-    mask[i] = (1<<n)-1;
+  char buf[100];
+  FILE *filein = stdin;
+  int T = 0;
+  for (int i = 1; i < argc; i++) {
+    if (i+1<argc && filein == stdin && strcmp(argv[i], "-i") == 0) {
+      filein = fopen(argv[i+1], "r");
+      if (filein == NULL) {
+        fprintf(stderr, "cannot open file\n");
+        return 1;
+      }
+    }
   }
-  Timing tm;
-  long long ans = nqueen_parallel_avx2(n, mask.data(), shuffle_table);
-  double t1 = tm.getRunTime();
-  printf("time=%f ans=%lld\n", t1, ans);
+  while (fscanf(filein, "%d", &n) == 1) {
+    fgets(buf, 100, filein);
+    T += 1;
+    if (n < 1 || n >= 32) return 0;
+    
+    std::vector<uint> mask(n);
+    for (int i = 0; i < n; i++) {
+      fgets(buf, 100, filein);
+      mask[i] = (1u<<n)-1;
+      for (int j = 0; j < n; j++) {
+        if (buf[j] == '*') mask[i] -= 1u<<j;
+      }
+    }
+    Timing tm;
+    long long ans = nqueen_parallel_avx2(n, mask.data(), shuffle_table);
+    double t1 = tm.getRunTime();
+    printf("Case #%d: %lld\n", T, ans);
+  }
 }
