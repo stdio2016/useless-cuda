@@ -5,7 +5,7 @@
 #include<cstdint>
 using namespace std::chrono;
 
-const uint8_t compressShuffle[16][16] = {
+static const uint8_t compressShuffle[16][16] = {
     { 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 },
     { 0, 1, 2, 3, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 },
     { 4, 5, 6, 7, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 },
@@ -24,9 +24,9 @@ const uint8_t compressShuffle[16][16] = {
     { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }
 };
 
-const uint8_t gather_data[16] = {12, 8, 4, 0, 12, 8, 4, 0, 28, 24, 20, 16, 28, 24, 20, 16};
+static const uint8_t gather_data[16] = {12, 8, 4, 0, 12, 8, 4, 0, 28, 24, 20, 16, 28, 24, 20, 16};
 
-const uint32_t aggregate_data[4] = {0x8040201, 0x1010101, 0x8040201, 0x1010101};
+static const uint32_t aggregate_data[4] = {0x8040201, 0x1010101, 0x8040201, 0x1010101};
 
 struct SubProbs {
   std::vector<uint32_t> mid, diag1, diag2, choice;
@@ -138,15 +138,23 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
     int i = 0;
     int rem = 0;
     uint32x4_t can = vld1q_dup_u32(&canplace);
+    uint32_t *a_choice = &a.choice[0];
+    uint32_t *a_mid = &a.mid[0];
+    uint32_t *a_diag1 = &a.diag1[0];
+    uint32_t *a_diag2 = &a.diag2[0];
+    uint32_t *b_choice = &b.choice[0];
+    uint32_t *b_mid = &b.mid[0];
+    uint32_t *b_diag1 = &b.diag1[0];
+    uint32_t *b_diag2 = &b.diag2[0];
     for (i = 0; i+8 <= num; i += 8) {
-        uint32x4_t cho_1 = vld1q_u32(&a.choice[i]);
-        uint32x4_t cho_2 = vld1q_u32(&a.choice[i+4]);
-        uint32x4_t mid_1 = vld1q_u32(&a.mid[i]);
-        uint32x4_t mid_2 = vld1q_u32(&a.mid[i+4]);
-        uint32x4_t d1_1 = vld1q_u32(&a.diag1[i]);
-        uint32x4_t d1_2 = vld1q_u32(&a.diag1[i+4]);
-        uint32x4_t d2_1 = vld1q_u32(&a.diag2[i]);
-        uint32x4_t d2_2 = vld1q_u32(&a.diag2[i+4]);
+        uint32x4_t cho_1 = vld1q_u32(&a_choice[i]);
+        uint32x4_t cho_2 = vld1q_u32(&a_choice[i+4]);
+        uint32x4_t mid_1 = vld1q_u32(&a_mid[i]);
+        uint32x4_t mid_2 = vld1q_u32(&a_mid[i+4]);
+        uint32x4_t d1_1 = vld1q_u32(&a_diag1[i]);
+        uint32x4_t d1_2 = vld1q_u32(&a_diag1[i+4]);
+        uint32x4_t d2_1 = vld1q_u32(&a_diag2[i]);
+        uint32x4_t d2_2 = vld1q_u32(&a_diag2[i+4]);
         uint32x4_t lowbit_1 = getlowbit(cho_1);
         uint32x4_t lowbit_2 = getlowbit(cho_2);
         uint32x4_t nxt_mid_1 = vorrq_u32(mid_1, lowbit_1);
@@ -173,43 +181,45 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
         nxt_d2_1 = lookup_u32(nxt_d2_1, idx1);
         nxt_d2_2 = lookup_u32(nxt_d2_2, idx2);
 
-        vst1q_u32(&b.choice[off], nxt_cho_1);
-        vst1q_u32(&b.mid[off], nxt_mid_1);
-        vst1q_u32(&b.diag1[off], nxt_d1_1);
-        vst1q_u32(&b.diag2[off], nxt_d2_1);
+        unsigned len3, len4;
+        uint8x16_t idx3, idx4;
+        compress_shuffle_idx(cho_1, cho_2, len3, len4, idx3, idx4);
+        cho_1 = lookup_u32(cho_1, idx3);
+        cho_2 = lookup_u32(cho_2, idx4);
+        mid_1 = lookup_u32(mid_1, idx3);
+        mid_2 = lookup_u32(mid_2, idx4);
+        d1_1 = lookup_u32(d1_1, idx3);
+        d1_2 = lookup_u32(d1_2, idx4);
+        d2_1 = lookup_u32(d2_1, idx3);
+        d2_2 = lookup_u32(d2_2, idx4);
+
+        vst1q_u32(&b_choice[off], nxt_cho_1);
+        vst1q_u32(&b_mid[off], nxt_mid_1);
+        vst1q_u32(&b_diag1[off], nxt_d1_1);
+        vst1q_u32(&b_diag2[off], nxt_d2_1);
         off += len1;
-        vst1q_u32(&b.choice[off], nxt_cho_2);
-        vst1q_u32(&b.mid[off], nxt_mid_2);
-        vst1q_u32(&b.diag1[off], nxt_d1_2);
-        vst1q_u32(&b.diag2[off], nxt_d2_2);
+        vst1q_u32(&b_choice[off], nxt_cho_2);
+        vst1q_u32(&b_mid[off], nxt_mid_2);
+        vst1q_u32(&b_diag1[off], nxt_d1_2);
+        vst1q_u32(&b_diag2[off], nxt_d2_2);
         off += len2;
 
-        compress_shuffle_idx(cho_1, cho_2, len1, len2, idx1, idx2);
-        cho_1 = lookup_u32(cho_1, idx1);
-        cho_2 = lookup_u32(cho_2, idx2);
-        mid_1 = lookup_u32(mid_1, idx1);
-        mid_2 = lookup_u32(mid_2, idx2);
-        d1_1 = lookup_u32(d1_1, idx1);
-        d1_2 = lookup_u32(d1_2, idx2);
-        d2_1 = lookup_u32(d2_1, idx1);
-        d2_2 = lookup_u32(d2_2, idx2);
-
-        vst1q_u32(&a.choice[rem], cho_1);
-        vst1q_u32(&a.mid[rem], mid_1);
-        vst1q_u32(&a.diag1[rem], d1_1);
-        vst1q_u32(&a.diag2[rem], d2_1);
-        rem += len1;
-        vst1q_u32(&a.choice[rem], cho_2);
-        vst1q_u32(&a.mid[rem], mid_2);
-        vst1q_u32(&a.diag1[rem], d1_2);
-        vst1q_u32(&a.diag2[rem], d2_2);
-        rem += len2;
+        vst1q_u32(&a_choice[rem], cho_1);
+        vst1q_u32(&a_mid[rem], mid_1);
+        vst1q_u32(&a_diag1[rem], d1_1);
+        vst1q_u32(&a_diag2[rem], d2_1);
+        rem += len3;
+        vst1q_u32(&a_choice[rem], cho_2);
+        vst1q_u32(&a_mid[rem], mid_2);
+        vst1q_u32(&a_diag1[rem], d1_2);
+        vst1q_u32(&a_diag2[rem], d2_2);
+        rem += len4;
     }
     for (; i < num; i++) {
-        uint32_t cho = a.choice[i];
-        uint32_t mid = a.mid[i];
-        uint32_t d1 = a.diag1[i];
-        uint32_t d2 = a.diag2[i];
+        uint32_t cho = a_choice[i];
+        uint32_t mid = a_mid[i];
+        uint32_t d1 = a_diag1[i];
+        uint32_t d2 = a_diag2[i];
         uint32_t lowbit = cho & -cho;
         uint32_t nxt_mid = mid | lowbit;
         uint32_t nxt_d1 = (d1 | lowbit) << 1;
@@ -217,17 +227,17 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
         cho = cho - lowbit;
         uint32_t nxt_cho = canplace & ~(nxt_mid | nxt_d1 | nxt_d2);
         if (cho) {
-            a.choice[rem] = cho;
-            a.mid[rem] = mid;
-            a.diag1[rem] = d1;
-            a.diag2[rem] = d2;
+            a_choice[rem] = cho;
+            a_mid[rem] = mid;
+            a_diag1[rem] = d1;
+            a_diag2[rem] = d2;
             rem++;
         }
         if (nxt_cho) {
-            b.choice[off] = nxt_cho;
-            b.mid[off] = nxt_mid;
-            b.diag1[off] = nxt_d1;
-            b.diag2[off] = nxt_d2;
+            b_choice[off] = nxt_cho;
+            b_mid[off] = nxt_mid;
+            b_diag1[off] = nxt_d1;
+            b_diag2[off] = nxt_d2;
             off++;
         }
     }
