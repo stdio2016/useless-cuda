@@ -34,8 +34,8 @@ struct SubProbs {
   SubProbs(int n): mid(n), diag1(n), diag2(n), choice(n), cnt(0) {}
 };
 
+// reference https://github.com/lemire/streamvbyte
 int compress(int *a, int n) {
-    //some(__builtin_neon_vld1q_v(gather_data, 48));
     uint8x8_t gather = vld1_u8(gather_data);
     uint8x16_t gather2 = vld1q_u8(gather_data);
     uint32x2_t aggregate = vld1_u32(aggregate_data);
@@ -93,51 +93,118 @@ int compress2(int *a, int n) {
     }
     return j;
 }
+
+// reference https://github.com/lemire/streamvbyte
+inline void compress_shuffle_idx(
+        uint32x4_t x1, uint32x4_t x2,
+        unsigned &len1, unsigned &len2,
+        uint8x16_t &idx1, uint8x16_t &idx2)
+{
+    uint8x16_t gather2 = vld1q_u8(gather_data);
+    uint32x4_t aggregate2 = vld1q_u32(aggregate_data);
+    uint32x4_t mask1 = vceqzq_u32(x1);
+    uint32x4_t mask2 = vceqzq_u32(x2);
+    // mask[i] is 0 if x[i] == 0, 1 otherwise
+    mask1 = vaddq_u32(vdupq_n_u32(1), mask1);
+    mask2 = vaddq_u32(vdupq_n_u32(1), mask2);
+    
+    uint8x16x2_t mask_b = {vreinterpretq_u8_u32(mask1), vreinterpretq_u8_u32(mask2)};
+    uint8x16_t lobytes = vqtbl2q_u8(mask_b, gather2);
+    uint32x4_t res = vmulq_u32(lobytes, aggregate2);
+    lobytes = vreinterpretq_u8_u32(res);
+
+    unsigned code1 = lobytes[3];
+    unsigned code2 = lobytes[11];
+    len1 = lobytes[7];
+    len2 = lobytes[15];
+    //printf("code %d len %u\n", code, len);
+    idx1 = vld1q_u8(compressShuffle[code1]);
+    idx2 = vld1q_u8(compressShuffle[code2]);
+}
+
+inline uint32x4_t getlowbit(uint32x4_t x) {
+    return vandq_u32(
+        x,
+        vreinterpretq_u32_s32(vnegq_s32(vreinterpretq_s32_u32(x)))
+    );
+}
+
+inline uint32x4_t lookup_u32(uint32x4_t x, uint8x16_t shuffle) {
+    return vreinterpretq_u32_u8(vqtbl1q_u8(vreinterpretq_u8_u32(x), shuffle));
+}
+
 int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
     int off = b.cnt;
     int i = 0;
     int rem = 0;
-    /*__m256i can = _mm256_set1_epi32(canplace);
+    uint32x4_t can = vld1q_dup_u32(&canplace);
     for (i = 0; i+8 <= num; i += 8) {
-        __m256i cho = _mm256_loadu_si256((__m256i*)&a.choice[i]);
-        __m256i mid = _mm256_loadu_si256((__m256i*)&a.mid[i]);
-        __m256i d1 = _mm256_loadu_si256((__m256i*)&a.diag1[i]);
-        __m256i d2 = _mm256_loadu_si256((__m256i*)&a.diag2[i]);
-        __m256i lowbit = _mm256_and_si256(cho, _mm256_sub_epi32(_mm256_setzero_si256(), cho));
-        __m256i nxt_mid = _mm256_or_si256(mid, lowbit);
-        __m256i nxt_d1 = _mm256_slli_epi32(_mm256_or_si256(d1, lowbit), 1);
-        __m256i nxt_d2 = _mm256_srli_epi32(_mm256_or_si256(d2, lowbit), 1);
-        cho = _mm256_sub_epi32(cho, lowbit);
-        __m256i nxt_cho = _mm256_andnot_si256(_mm256_or_si256(_mm256_or_si256(nxt_mid, nxt_d1), nxt_d2), can);
-        
-        __m256i zer = _mm256_cmpeq_epi32(nxt_cho, _mm256_setzero_si256());
-        int sel = _mm256_movemask_ps((__m256)zer);
-        __m256i idx = _mm256_load_si256(&shuffle_table[sel]);
-        nxt_cho = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_cho, idx);
-        nxt_mid = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_mid, idx);
-        nxt_d1 = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_d1, idx);
-        nxt_d2 = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_d2, idx);
-        
-        _mm256_storeu_si256((__m256i*)&b.choice[off], nxt_cho);
-        _mm256_storeu_si256((__m256i*)&b.mid[off], nxt_mid);
-        _mm256_storeu_si256((__m256i*)&b.diag1[off], nxt_d1);
-        _mm256_storeu_si256((__m256i*)&b.diag2[off], nxt_d2);
-        off += __builtin_popcount(255-sel);
-        
-        zer = _mm256_cmpeq_epi32(cho, _mm256_setzero_si256());
-        sel = _mm256_movemask_ps((__m256)zer);
-        idx = _mm256_load_si256(&shuffle_table[sel]);
-        cho = (__m256i)_mm256_permutevar8x32_ps((__m256)cho, idx);
-        mid = (__m256i)_mm256_permutevar8x32_ps((__m256)mid, idx);
-        d1 = (__m256i)_mm256_permutevar8x32_ps((__m256)d1, idx);
-        d2 = (__m256i)_mm256_permutevar8x32_ps((__m256)d2, idx);
-        
-        _mm256_storeu_si256((__m256i*)&a.choice[rem], cho);
-        _mm256_storeu_si256((__m256i*)&a.mid[rem], mid);
-        _mm256_storeu_si256((__m256i*)&a.diag1[rem], d1);
-        _mm256_storeu_si256((__m256i*)&a.diag2[rem], d2);
-        rem += __builtin_popcount(255-sel);
-    }*/
+        uint32x4_t cho_1 = vld1q_u32(&a.choice[i]);
+        uint32x4_t cho_2 = vld1q_u32(&a.choice[i+4]);
+        uint32x4_t mid_1 = vld1q_u32(&a.mid[i]);
+        uint32x4_t mid_2 = vld1q_u32(&a.mid[i+4]);
+        uint32x4_t d1_1 = vld1q_u32(&a.diag1[i]);
+        uint32x4_t d1_2 = vld1q_u32(&a.diag1[i+4]);
+        uint32x4_t d2_1 = vld1q_u32(&a.diag2[i]);
+        uint32x4_t d2_2 = vld1q_u32(&a.diag2[i+4]);
+        uint32x4_t lowbit_1 = getlowbit(cho_1);
+        uint32x4_t lowbit_2 = getlowbit(cho_2);
+        uint32x4_t nxt_mid_1 = vorrq_u32(mid_1, lowbit_1);
+        uint32x4_t nxt_mid_2 = vorrq_u32(mid_2, lowbit_2);
+        uint32x4_t nxt_d1_1 = vshlq_n_u32(vorrq_u32(d1_1, lowbit_1), 1);
+        uint32x4_t nxt_d1_2 = vshlq_n_u32(vorrq_u32(d1_2, lowbit_2), 1);
+        uint32x4_t nxt_d2_1 = vshrq_n_u32(vorrq_u32(d2_1, lowbit_1), 1);
+        uint32x4_t nxt_d2_2 = vshrq_n_u32(vorrq_u32(d2_2, lowbit_2), 1);
+        cho_1 = vsubq_u32(cho_1, lowbit_1);
+        cho_2 = vsubq_u32(cho_2, lowbit_2);
+        // bic(a, b) means a AND NOT b
+        uint32x4_t nxt_cho_1 = vbicq_u32(can, vorrq_u32(vorrq_u32(nxt_mid_1, nxt_d1_1), nxt_d2_1));
+        uint32x4_t nxt_cho_2 = vbicq_u32(can, vorrq_u32(vorrq_u32(nxt_mid_2, nxt_d1_2), nxt_d2_2));
+
+        unsigned len1, len2;
+        uint8x16_t idx1, idx2;
+        compress_shuffle_idx(nxt_cho_1, nxt_cho_2, len1, len2, idx1, idx2);
+        nxt_cho_1 = lookup_u32(nxt_cho_1, idx1);
+        nxt_cho_2 = lookup_u32(nxt_cho_2, idx2);
+        nxt_mid_1 = lookup_u32(nxt_mid_1, idx1);
+        nxt_mid_2 = lookup_u32(nxt_mid_2, idx2);
+        nxt_d1_1 = lookup_u32(nxt_d1_1, idx1);
+        nxt_d1_2 = lookup_u32(nxt_d1_2, idx2);
+        nxt_d2_1 = lookup_u32(nxt_d2_1, idx1);
+        nxt_d2_2 = lookup_u32(nxt_d2_2, idx2);
+
+        vst1q_u32(&b.choice[off], nxt_cho_1);
+        vst1q_u32(&b.mid[off], nxt_mid_1);
+        vst1q_u32(&b.diag1[off], nxt_d1_1);
+        vst1q_u32(&b.diag2[off], nxt_d2_1);
+        off += len1;
+        vst1q_u32(&b.choice[off], nxt_cho_2);
+        vst1q_u32(&b.mid[off], nxt_mid_2);
+        vst1q_u32(&b.diag1[off], nxt_d1_2);
+        vst1q_u32(&b.diag2[off], nxt_d2_2);
+        off += len2;
+
+        compress_shuffle_idx(cho_1, cho_2, len1, len2, idx1, idx2);
+        cho_1 = lookup_u32(cho_1, idx1);
+        cho_2 = lookup_u32(cho_2, idx2);
+        mid_1 = lookup_u32(mid_1, idx1);
+        mid_2 = lookup_u32(mid_2, idx2);
+        d1_1 = lookup_u32(d1_1, idx1);
+        d1_2 = lookup_u32(d1_2, idx2);
+        d2_1 = lookup_u32(d2_1, idx1);
+        d2_2 = lookup_u32(d2_2, idx2);
+
+        vst1q_u32(&a.choice[rem], cho_1);
+        vst1q_u32(&a.mid[rem], mid_1);
+        vst1q_u32(&a.diag1[rem], d1_1);
+        vst1q_u32(&a.diag2[rem], d2_1);
+        rem += len1;
+        vst1q_u32(&a.choice[rem], cho_2);
+        vst1q_u32(&a.mid[rem], mid_2);
+        vst1q_u32(&a.diag1[rem], d1_2);
+        vst1q_u32(&a.diag2[rem], d2_2);
+        rem += len2;
+    }
     for (; i < num; i++) {
         uint32_t cho = a.choice[i];
         uint32_t mid = a.mid[i];
@@ -208,7 +275,7 @@ int solve(int n, const uint32_t *mask, SubProbs in, int page) {
     return ans;
 }
 
-long long nqueen_avx2(int n, const uint32_t *mask) {
+long long nqueen_arm64(int n, const uint32_t *mask) {
     SubProbs gen(1);
     gen.cnt = 1;
     gen.choice[0] = mask[0];
@@ -218,7 +285,7 @@ long long nqueen_avx2(int n, const uint32_t *mask) {
     return solve(n, mask, gen, 256);
 }
 
-long long nqueen_parallel_avx2(int n, const uint32_t *mask) {
+long long nqueen_parallel_arm64(int n, const uint32_t *mask) {
     if (n == 1) { // boundary/trivial case
         return (mask[0]&1) == 1;
     }
@@ -253,14 +320,14 @@ long long nqueen_parallel_avx2(int n, const uint32_t *mask) {
         // do not change schedule
         #pragma omp for schedule(static, 1)
         for (int i = 0; i < gen.cnt; i++) {
-        me.cnt += 1;
-        me.choice.push_back(gen.choice[i]);
-        me.mid.push_back(gen.mid[i]);
-        me.diag1.push_back(gen.diag1[i]);
-        me.diag2.push_back(gen.diag2[i]);
+            me.cnt += 1;
+            me.choice.push_back(gen.choice[i]);
+            me.mid.push_back(gen.mid[i]);
+            me.diag1.push_back(gen.diag1[i]);
+            me.diag2.push_back(gen.diag2[i]);
         }
         
-        ans += solve(n-unroll_lv, &mask[unroll_lv], me, 256);
+        ans += solve(n-unroll_lv, &mask[unroll_lv], me, 384);
         //printf("ans = %d\n", ans);
     }
     return ans;
@@ -295,7 +362,7 @@ int main(int argc, char *argv[]) {
             }
         }
         //Timing tm;
-        long long ans = nqueen_parallel_avx2(n, mask.data());
+        long long ans = nqueen_parallel_arm64(n, mask.data());
         //double t1 = tm.getRunTime();
         printf("Case #%d: %lld\n", T, ans);
     }
