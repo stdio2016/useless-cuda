@@ -5,6 +5,7 @@
 #include<cstdint>
 using namespace std::chrono;
 
+__attribute((aligned(16)))
 static const uint8_t compressShuffle[16][16] = {
     { 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 },
     { 0, 1, 2, 3, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 },
@@ -24,8 +25,10 @@ static const uint8_t compressShuffle[16][16] = {
     { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }
 };
 
+__attribute((aligned(16)))
 static const uint8_t gather_data[16] = {12, 8, 4, 0, 12, 8, 4, 0, 28, 24, 20, 16, 28, 24, 20, 16};
 
+__attribute((aligned(16)))
 static const uint32_t aggregate_data[4] = {0x8040201, 0x1010101, 0x8040201, 0x1010101};
 
 struct SubProbs {
@@ -111,15 +114,21 @@ inline void compress_shuffle_idx(
     uint8x16x2_t mask_b = {vreinterpretq_u8_u32(mask1), vreinterpretq_u8_u32(mask2)};
     uint8x16_t lobytes = vqtbl2q_u8(mask_b, gather2);
     uint32x4_t res = vmulq_u32(lobytes, aggregate2);
-    lobytes = vreinterpretq_u8_u32(res);
+    uint32_t codelen[4];
+    vst1q_u32(codelen, res);
+    //lobytes = vreinterpretq_u8_u32(res);
 
-    unsigned code1 = lobytes[3];
-    unsigned code2 = lobytes[11];
-    len1 = lobytes[7];
-    len2 = lobytes[15];
+    //unsigned code1 = lobytes[3];
+    unsigned code1 = codelen[0] >> 20;
+    //unsigned code2 = lobytes[11];
+    unsigned code2 = codelen[2] >> 20;
+    //len1 = lobytes[7];
+    len1 = codelen[1] >> 24;
+    //len2 = lobytes[15];
+    len2 = codelen[3] >> 24;
     //printf("code %d len %u\n", code, len);
-    idx1 = vld1q_u8(compressShuffle[code1]);
-    idx2 = vld1q_u8(compressShuffle[code2]);
+    idx1 = vld1q_u8(&compressShuffle[0][0] + code1);
+    idx2 = vld1q_u8(&compressShuffle[0][0] + code2);
 }
 
 inline uint32x4_t getlowbit(uint32x4_t x) {
@@ -133,10 +142,10 @@ inline uint32x4_t lookup_u32(uint32x4_t x, uint8x16_t shuffle) {
     return vreinterpretq_u32_u8(vqtbl1q_u8(vreinterpretq_u8_u32(x), shuffle));
 }
 
-int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
+int next_step(SubProbs &a, SubProbs &b, int from, int to, uint32_t canplace) {
     int off = b.cnt;
-    int i = 0;
-    int rem = 0;
+    int i = from;
+    int rem = from;
     uint32x4_t can = vld1q_dup_u32(&canplace);
     uint32_t *a_choice = &a.choice[0];
     uint32_t *a_mid = &a.mid[0];
@@ -146,7 +155,7 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
     uint32_t *b_mid = &b.mid[0];
     uint32_t *b_diag1 = &b.diag1[0];
     uint32_t *b_diag2 = &b.diag2[0];
-    for (i = 0; i+8 <= num; i += 8) {
+    for (i = from; i+8 <= to; i += 8) {
         uint32x4_t cho_1 = vld1q_u32(&a_choice[i]);
         uint32x4_t cho_2 = vld1q_u32(&a_choice[i+4]);
         uint32x4_t mid_1 = vld1q_u32(&a_mid[i]);
@@ -169,18 +178,6 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
         uint32x4_t nxt_cho_1 = vbicq_u32(can, vorrq_u32(vorrq_u32(nxt_mid_1, nxt_d1_1), nxt_d2_1));
         uint32x4_t nxt_cho_2 = vbicq_u32(can, vorrq_u32(vorrq_u32(nxt_mid_2, nxt_d1_2), nxt_d2_2));
 
-        unsigned len1, len2;
-        uint8x16_t idx1, idx2;
-        compress_shuffle_idx(nxt_cho_1, nxt_cho_2, len1, len2, idx1, idx2);
-        nxt_cho_1 = lookup_u32(nxt_cho_1, idx1);
-        nxt_cho_2 = lookup_u32(nxt_cho_2, idx2);
-        nxt_mid_1 = lookup_u32(nxt_mid_1, idx1);
-        nxt_mid_2 = lookup_u32(nxt_mid_2, idx2);
-        nxt_d1_1 = lookup_u32(nxt_d1_1, idx1);
-        nxt_d1_2 = lookup_u32(nxt_d1_2, idx2);
-        nxt_d2_1 = lookup_u32(nxt_d2_1, idx1);
-        nxt_d2_2 = lookup_u32(nxt_d2_2, idx2);
-
         unsigned len3, len4;
         uint8x16_t idx3, idx4;
         compress_shuffle_idx(cho_1, cho_2, len3, len4, idx3, idx4);
@@ -193,16 +190,17 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
         d2_1 = lookup_u32(d2_1, idx3);
         d2_2 = lookup_u32(d2_2, idx4);
 
-        vst1q_u32(&b_choice[off], nxt_cho_1);
-        vst1q_u32(&b_mid[off], nxt_mid_1);
-        vst1q_u32(&b_diag1[off], nxt_d1_1);
-        vst1q_u32(&b_diag2[off], nxt_d2_1);
-        off += len1;
-        vst1q_u32(&b_choice[off], nxt_cho_2);
-        vst1q_u32(&b_mid[off], nxt_mid_2);
-        vst1q_u32(&b_diag1[off], nxt_d1_2);
-        vst1q_u32(&b_diag2[off], nxt_d2_2);
-        off += len2;
+        unsigned len1, len2;
+        uint8x16_t idx1, idx2;
+        compress_shuffle_idx(nxt_cho_1, nxt_cho_2, len1, len2, idx1, idx2);
+        nxt_cho_1 = lookup_u32(nxt_cho_1, idx1);
+        nxt_cho_2 = lookup_u32(nxt_cho_2, idx2);
+        nxt_mid_1 = lookup_u32(nxt_mid_1, idx1);
+        nxt_mid_2 = lookup_u32(nxt_mid_2, idx2);
+        nxt_d1_1 = lookup_u32(nxt_d1_1, idx1);
+        nxt_d1_2 = lookup_u32(nxt_d1_2, idx2);
+        nxt_d2_1 = lookup_u32(nxt_d2_1, idx1);
+        nxt_d2_2 = lookup_u32(nxt_d2_2, idx2);
 
         vst1q_u32(&a_choice[rem], cho_1);
         vst1q_u32(&a_mid[rem], mid_1);
@@ -214,8 +212,19 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
         vst1q_u32(&a_diag1[rem], d1_2);
         vst1q_u32(&a_diag2[rem], d2_2);
         rem += len4;
+
+        vst1q_u32(&b_choice[off], nxt_cho_1);
+        vst1q_u32(&b_mid[off], nxt_mid_1);
+        vst1q_u32(&b_diag1[off], nxt_d1_1);
+        vst1q_u32(&b_diag2[off], nxt_d2_1);
+        off += len1;
+        vst1q_u32(&b_choice[off], nxt_cho_2);
+        vst1q_u32(&b_mid[off], nxt_mid_2);
+        vst1q_u32(&b_diag1[off], nxt_d1_2);
+        vst1q_u32(&b_diag2[off], nxt_d2_2);
+        off += len2;
     }
-    for (; i < num; i++) {
+    for (; i < to; i++) {
         uint32_t cho = a_choice[i];
         uint32_t mid = a_mid[i];
         uint32_t d1 = a_diag1[i];
@@ -245,29 +254,31 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint32_t canplace) {
     return rem;
 }
 
-int solve(int n, const uint32_t *mask, SubProbs in, int page) {
+long long solve(int n, const uint32_t *mask, SubProbs in, int page) {
     std::vector<SubProbs> probs;
     probs.push_back(in);
     for (int i = 1; i <= n; i++) {
         probs.push_back(SubProbs(page * 2));
     }
-    int ans = 0;
+    long long ans = 0;
     int lv = 0;
     int depleted = 0;
     while (depleted < n-1) {
         int has = probs[lv].cnt;
+        int all = probs[lv].cnt;
         if (page < has) has = page;
         int prev = probs[lv+1].cnt;
-        int rem = next_step(probs[lv], probs[lv+1], has, mask[lv+1]);
-        int all = probs[lv].cnt;
-        if (all > has) {
+        int rem = next_step(probs[lv], probs[lv+1], all - has, all, mask[lv+1]);
+        /*if (all > has) {
             std::copy(&probs[lv].mid[has], &probs[lv].mid[all], &probs[lv].mid[rem]);
             std::copy(&probs[lv].diag1[has], &probs[lv].diag1[all], &probs[lv].diag1[rem]);
             std::copy(&probs[lv].diag2[has], &probs[lv].diag2[all], &probs[lv].diag2[rem]);
             std::copy(&probs[lv].choice[has], &probs[lv].choice[all], &probs[lv].choice[rem]);
         }
-        probs[lv].cnt = rem + all - has;
+        probs[lv].cnt = rem + all - has;*/
+        probs[lv].cnt = rem;
         if (probs[lv].cnt == 0 && lv == depleted) depleted++;
+        ans += has;
 
         //printf("lv=%d added=%d rem=%d depleted=%d cnt=%d,%d\n", lv, now-prev, rem, depleted, probs[lv].cnt, probs[lv+1].cnt);
 
@@ -275,7 +286,7 @@ int solve(int n, const uint32_t *mask, SubProbs in, int page) {
         else while (probs[lv+1].cnt >= page || lv+1 == depleted) {
             lv += 1;
             if (lv == n-1) {
-                ans += probs[n-1].cnt;
+                //ans += probs[n-1].cnt;
                 probs[n-1].cnt = 0;
                 lv -= 1;
                 break;
@@ -312,7 +323,7 @@ long long nqueen_parallel_arm64(int n, const uint32_t *mask) {
         gen2.cnt = 0;
         int rem = gen.cnt;
         while (rem > 0) {
-            rem = next_step(gen, gen2, gen.cnt, mask[unroll_lv]);
+            rem = next_step(gen, gen2, 0, gen.cnt, mask[unroll_lv]);
             gen.cnt = rem;
         }
         std::swap(gen, gen2);
