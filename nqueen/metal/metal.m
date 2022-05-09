@@ -7,6 +7,14 @@ struct SubP {
     uint ss;
 };
 
+struct ProgressStore {
+    uint i;
+    uint mid;
+    uint diag1, diag1r;
+    uint diag2, diag2r;
+    uint s0[12];
+};
+
 id<MTLComputePipelineState> Nqueen_kern;
 id<MTLCommandQueue> Command_queue;
 
@@ -16,14 +24,17 @@ id<MTLBuffer> gpu_works;
 id<MTLBuffer> gpu_workCount;
 id<MTLBuffer> gpu_flag;
 id<MTLBuffer> gpu_result;
+id<MTLBuffer> gpu_progress;
+struct ProgressStore *gpu_progress_backup;
 
-id<MTLCommandBuffer> nqueen_send_gpu(int cut, int nblocks, int nworks, NSMutableArray *works, bool recompute) {
-    int flag = nblocks * 256;
+id<MTLCommandBuffer> nqueen_send_gpu(int cut, int nblocks, int nworks, struct SubP *works, bool recompute) {
+    int flag = 0;
     struct SubP *works_data = gpu_works.contents;
     if (!recompute) {
-        for (int i = 0; i < nworks; i++) {
-            [[works objectAtIndex: i] getValue: &works_data[i]];
-        }
+        memcpy(works_data, works, sizeof(struct SubP) * nworks);
+        memcpy(gpu_progress_backup, gpu_progress.contents, sizeof(struct ProgressStore) * nblocks*256);
+    } else {
+        memcpy(gpu_progress.contents, gpu_progress_backup, sizeof(struct ProgressStore) * nblocks*256);
     }
     //cudaMemcpy(gpu_flag, &flag, sizeof(int), cudaMemcpyHostToDevice);
     //cudaMemcpy(gpu_works, works, nworks * sizeof(SubP), cudaMemcpyHostToDevice);
@@ -41,6 +52,7 @@ id<MTLCommandBuffer> nqueen_send_gpu(int cut, int nblocks, int nworks, NSMutable
     [computeEncoder setBuffer:gpu_workCount offset:0 atIndex:3];
     [computeEncoder setBuffer:gpu_flag offset:0 atIndex:4];
     [computeEncoder setBuffer:gpu_result offset:0 atIndex:5];
+    [computeEncoder setBuffer:gpu_progress offset:0 atIndex:6];
     [computeEncoder setThreadgroupMemoryLength:sizeof(uint)*12*256 atIndex:0];
 
     MTLSize gridSize = MTLSizeMake(nblocks * 256, 1, 1);
@@ -55,7 +67,7 @@ id<MTLCommandBuffer> nqueen_send_gpu(int cut, int nblocks, int nworks, NSMutable
 }
 
 int errCount = 0;
-long long nqueen_wait_compute(int nblocks, id<MTLCommandBuffer> commandBuffer) {
+long long nqueen_wait_compute(int nblocks, id<MTLCommandBuffer> commandBuffer, int *finished) {
     uint *result = gpu_result.contents;
     long long sum = 0;
 
@@ -72,12 +84,14 @@ long long nqueen_wait_compute(int nblocks, id<MTLCommandBuffer> commandBuffer) {
     for (int i = 0; i < nblocks*256; i++) {
         sum += result[i];
     }
+    *finished = *(int *)gpu_flag.contents;
     return sum;
 }
 
 long long nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2,
         uint *canplace, int nblocks, int nworks) {
-    NSMutableArray<NSValue*> *works = [NSMutableArray arrayWithCapacity: 100];
+    struct SubP *works = malloc(sizeof(struct SubP) * nworks*2);
+    int worksCount = 0;
     uint s0[32], s1[32], s2[32], s3[32];
     if (lv < cut) return 0;
     int i = lv-1;
@@ -88,6 +102,7 @@ long long nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2,
     s3[i] = diag2;
     long long sum = 0;
     id<MTLCommandBuffer> lastWork = nil;
+    int consumed = 0;
     while (i < lv) {
         choice = s0[i];
         mid = s1[i];
@@ -98,18 +113,22 @@ long long nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2,
         if (!choice) i++;
         else if (i == cut-1) {
             struct SubP p = {mid, diag1, diag2};
-            [works addObject:[[NSValue alloc] initWithBytes:&p objCType:@encode(struct SubP)]];
-            if (works.count == nworks) {
+            works[worksCount++] = p;
+            if (worksCount == nworks || worksCount == nworks*2) {
                 if (lastWork) {
-                    long long result = nqueen_wait_compute(nblocks, lastWork);
-                    while (result == -1) {
-                        lastWork = nqueen_send_gpu(cut, nblocks, nworks, works, true);
-                        result = nqueen_wait_compute(nblocks, lastWork);
-                    }
-                    sum += result;
+                    do {
+                        long long result = nqueen_wait_compute(nblocks, lastWork, &consumed);
+                        while (result == -1) {
+                            lastWork = nqueen_send_gpu(cut, nblocks, nworks, works, true);
+                            result = nqueen_wait_compute(nblocks, lastWork, &consumed);
+                        }
+                        consumed = MIN(consumed, nworks);
+                        memmove(works, works + consumed, sizeof(struct SubP) * (worksCount - consumed));
+                        worksCount -= consumed;
+                        sum += result;
+                    } while (consumed == 0) ;
                 }
                 lastWork = nqueen_send_gpu(cut, nblocks, nworks, works, false);
-                [works removeAllObjects];
             }
             i++;
         }
@@ -127,20 +146,38 @@ long long nqueen_gen(int lv, int cut, uint mid, uint diag1, uint diag2,
         }
     }
     if (lastWork) {
-        long long result = nqueen_wait_compute(nblocks, lastWork);
+        long long result = nqueen_wait_compute(nblocks, lastWork, &consumed);
         while (result == -1) {
             lastWork = nqueen_send_gpu(cut, nblocks, nworks, works, true);
-            result = nqueen_wait_compute(nblocks, lastWork);
+            result = nqueen_wait_compute(nblocks, lastWork, &consumed);
         }
+        consumed = MIN(consumed, nworks);
         sum += result;
+        memmove(works, works + consumed, sizeof(struct SubP) * (worksCount - consumed));
+        worksCount -= consumed;
     }
-    lastWork = nqueen_send_gpu(cut, nblocks, works.count, works, false);
-    long long result = nqueen_wait_compute(nblocks, lastWork);
-    while (result == -1) {
-        lastWork = nqueen_send_gpu(cut, nblocks, works.count, works, true);
-        result = nqueen_wait_compute(nblocks, lastWork);
+    bool all_finish = false;
+    while (worksCount > 0 || !all_finish) {
+        int wc = MIN(worksCount, nworks);
+        lastWork = nqueen_send_gpu(cut, nblocks, wc, works, false);
+        long long result = nqueen_wait_compute(nblocks, lastWork, &consumed);
+        while (result == -1) {
+            lastWork = nqueen_send_gpu(cut, nblocks, wc, works, true);
+            result = nqueen_wait_compute(nblocks, lastWork, &consumed);
+        }
+        consumed = MIN(consumed, wc);
+        sum += result;
+        if (worksCount > consumed) {
+            memmove(works, works + consumed, sizeof(struct SubP) * (worksCount - consumed));
+        }
+        worksCount -= consumed;
+        all_finish = true;
+        struct ProgressStore *ps = gpu_progress.contents;
+        for (int i = 0; i < nblocks*256; i++) {
+            if (ps[i].i != 87) all_finish = false;
+        }
     }
-    sum += result;
+    free(works);
     return sum;
 }
 
@@ -152,6 +189,10 @@ long long nqueen_metal(int n, unsigned canplace[], int nblocks, int nworks) {
     uint *canplace_data = gpu_canplace.contents;
     for (int i = 0; i < 32; i++) {
         canplace_data[i] = canplace[i];
+    }
+    struct ProgressStore *ps = gpu_progress.contents;
+    for (int i = 0; i < nblocks*256; i++) {
+        ps[i].i = 87;
     }
     //cudaMemcpy(gpu_canplace, canplace, sizeof(uint) * 32, cudaMemcpyHostToDevice);
     return nqueen_gen(n, cut, 0, 0, 0, canplace, nblocks, nworks);
@@ -206,7 +247,7 @@ int main(int argc, char *argv[]) {
     // Metal has no API for retrieving hardware unit count
     int multiProcessorCount = 8;
     int nblocks = multiProcessorCount * 5;
-    int workCount = nblocks * 256 * 30;
+    int workCount = nblocks * 256 * 7;
 
     gpu_lv = [device newBufferWithLength:sizeof(int) options:MTLResourceStorageModeShared];
     gpu_canplace = [device newBufferWithLength:sizeof(uint)*32 options:MTLResourceStorageModeShared];
@@ -214,6 +255,8 @@ int main(int argc, char *argv[]) {
     gpu_workCount = [device newBufferWithLength:sizeof(int) options:MTLResourceStorageModeShared];
     gpu_flag = [device newBufferWithLength:sizeof(uint) options:MTLResourceStorageModeShared];
     gpu_result = [device newBufferWithLength:sizeof(uint)*nblocks*256 options:MTLResourceStorageModeShared];
+    gpu_progress = [device newBufferWithLength:sizeof(struct ProgressStore)*nblocks*256 options:MTLResourceStorageModeShared];
+    gpu_progress_backup = malloc(sizeof(struct ProgressStore)*nblocks*256);
     //NSLog(@"Created Buffer");
 
     while (fscanf(filein, "%d", &n) == 1) {
