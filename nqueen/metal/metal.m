@@ -12,6 +12,7 @@ struct ProgressStore {
     uint mid;
     uint diag1, diag1r;
     uint diag2, diag2r;
+    uint can;
     uint s0[12];
 };
 
@@ -185,7 +186,7 @@ long long nqueen_metal(int n, unsigned canplace[], int nblocks, int nworks) {
     // create subproblems
     int cut = n - 5;
     if (cut < 2) cut = 2;
-    if (cut > 12) cut = 12;
+    if (cut > 13) cut = 13;
     uint *canplace_data = gpu_canplace.contents;
     for (int i = 0; i < 32; i++) {
         canplace_data[i] = canplace[i];

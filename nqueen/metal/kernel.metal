@@ -10,6 +10,7 @@ struct ProgressStore {
     uint mid;
     uint diag1, diag1r;
     uint diag2, diag2r;
+    uint can;
     uint s0[12];
 };
 
@@ -33,6 +34,7 @@ kernel void nqueen_kern(device int *lv_ptr,
     uint mid = 0;
     uint diag1 = 0, diag1r = 0;
     uint diag2 = 0, diag2r = 0;
+    uint can = 0;
     if (progress[gid].i == 87) {
         i = lv-1;
         my = atomic_fetch_add_explicit(flag, 1, metal::memory_order_relaxed);
@@ -40,7 +42,7 @@ kernel void nqueen_kern(device int *lv_ptr,
             mid = works[my].mid;
             diag1 = works[my].diag1, diag1r = 0;
             diag2 = works[my].diag2, diag2r = 0;
-            s0[i][tid] = canplace[i] & ~(mid | diag1 | diag2);
+            can = canplace[i] & ~(mid | diag1 | diag2);
         }
         else {
             i = 87;
@@ -54,13 +56,14 @@ kernel void nqueen_kern(device int *lv_ptr,
         diag1r = progress[gid].diag1r;
         diag2 = progress[gid].diag2;
         diag2r = progress[gid].diag2r;
+        can = progress[gid].can;
         for (int j = 0; j < 12; j++) {
             s0[j][tid] = progress[gid].s0[j];
         }
     }
     uint runtime = 0;
     for (; runtime < 100000 && my < workCount; ) {
-        uint can = s0[i][tid];
+        //uint can = s0[i][tid];
         uint s = can & -can;
         if (can) {
             mid += s;
@@ -71,13 +74,13 @@ kernel void nqueen_kern(device int *lv_ptr,
             diag2r = diag2r >> 1 | diag2 << 31;
             diag2 >>= 1;
             i -= 1;
-            can = canplace[i] & ~(mid | diag1 | diag2);
             s0[i][tid] = can;
+            can = canplace[i] & ~(mid | diag1 | diag2);
         }
         if (can && i == 0) sol += 1, can = 0;
         if (!can && i+1<lv) {
-            i += 1;
             can = s0[i][tid];
+            i += 1;
             s = can & -can;
             mid -= s;
             diag1 = diag1r << 31 | diag1 >> 1;
@@ -86,7 +89,7 @@ kernel void nqueen_kern(device int *lv_ptr,
             diag2 = diag2r >> 31 | diag2 << 1;
             diag2r <<= 1;
             diag2 -= s;
-            s0[i][tid] = can - s;
+            can = can - s;
         }
         if (!can && i == lv-1) {
             my = atomic_fetch_add_explicit(flag, 1, metal::memory_order_relaxed);
@@ -94,7 +97,7 @@ kernel void nqueen_kern(device int *lv_ptr,
                 mid = works[my].mid;
                 diag1 = works[my].diag1, diag1r = 0;
                 diag2 = works[my].diag2, diag2r = 0;
-                s0[i][tid] = canplace[i] & ~(mid | diag1 | diag2);
+                can = canplace[i] & ~(mid | diag1 | diag2);
             }
             else {
                 i = 87;
@@ -110,6 +113,7 @@ kernel void nqueen_kern(device int *lv_ptr,
     progress[gid].diag1r = diag1r;
     progress[gid].diag2 = diag2;
     progress[gid].diag2r = diag2r;
+    progress[gid].can = can;
     for (int j = 0; j < 12; j++) {
         progress[gid].s0[j] = s0[j][tid];
     }
