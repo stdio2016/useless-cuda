@@ -155,7 +155,7 @@ int next_step(SubProbs &a, SubProbs &b, int from, int to, uint32_t canplace) {
     uint32_t *b_mid = &b.mid[0];
     uint32_t *b_diag1 = &b.diag1[0];
     uint32_t *b_diag2 = &b.diag2[0];
-    for (i = from; i+8 <= to; i += 8) {
+    for (i = from; i+16 <= to; i += 16) {
         uint32x4_t cho_1 = vld1q_u32(&a_choice[i]);
         uint32x4_t cho_2 = vld1q_u32(&a_choice[i+4]);
         uint32x4_t mid_1 = vld1q_u32(&a_mid[i]);
@@ -177,6 +177,29 @@ int next_step(SubProbs &a, SubProbs &b, int from, int to, uint32_t canplace) {
         // bic(a, b) means a AND NOT b
         uint32x4_t nxt_cho_1 = vbicq_u32(can, vorrq_u32(vorrq_u32(nxt_mid_1, nxt_d1_1), nxt_d2_1));
         uint32x4_t nxt_cho_2 = vbicq_u32(can, vorrq_u32(vorrq_u32(nxt_mid_2, nxt_d1_2), nxt_d2_2));
+
+        uint32x4_t cho_3 = vld1q_u32(&a_choice[i+8]);
+        uint32x4_t cho_4 = vld1q_u32(&a_choice[i+12]);
+        uint32x4_t mid_3 = vld1q_u32(&a_mid[i+8]);
+        uint32x4_t mid_4 = vld1q_u32(&a_mid[i+12]);
+        uint32x4_t d1_3 = vld1q_u32(&a_diag1[i+8]);
+        uint32x4_t d1_4 = vld1q_u32(&a_diag1[i+12]);
+        uint32x4_t d2_3 = vld1q_u32(&a_diag2[i+8]);
+        uint32x4_t d2_4 = vld1q_u32(&a_diag2[i+12]);
+
+        uint32x4_t lowbit_3 = getlowbit(cho_3);
+        uint32x4_t lowbit_4 = getlowbit(cho_4);
+        uint32x4_t nxt_mid_3 = vorrq_u32(mid_3, lowbit_3);
+        uint32x4_t nxt_mid_4 = vorrq_u32(mid_4, lowbit_4);
+        uint32x4_t nxt_d1_3 = vshlq_n_u32(vorrq_u32(d1_3, lowbit_3), 1);
+        uint32x4_t nxt_d1_4 = vshlq_n_u32(vorrq_u32(d1_4, lowbit_4), 1);
+        uint32x4_t nxt_d2_3 = vshrq_n_u32(vorrq_u32(d2_3, lowbit_3), 1);
+        uint32x4_t nxt_d2_4 = vshrq_n_u32(vorrq_u32(d2_4, lowbit_4), 1);
+        cho_3 = vsubq_u32(cho_3, lowbit_3);
+        cho_4 = vsubq_u32(cho_4, lowbit_4);
+        // bic(a, b) means a AND NOT b
+        uint32x4_t nxt_cho_3 = vbicq_u32(can, vorrq_u32(vorrq_u32(nxt_mid_3, nxt_d1_3), nxt_d2_3));
+        uint32x4_t nxt_cho_4 = vbicq_u32(can, vorrq_u32(vorrq_u32(nxt_mid_4, nxt_d1_4), nxt_d2_4));
 
         unsigned len3, len4;
         uint8x16_t idx3, idx4;
@@ -202,6 +225,9 @@ int next_step(SubProbs &a, SubProbs &b, int from, int to, uint32_t canplace) {
         nxt_d2_1 = lookup_u32(nxt_d2_1, idx1);
         nxt_d2_2 = lookup_u32(nxt_d2_2, idx2);
 
+        unsigned len5, len6, len7 ,len8;
+        compress_shuffle_idx(cho_3, cho_4, len7, len8, idx3, idx4);
+        compress_shuffle_idx(nxt_cho_3, nxt_cho_4, len5, len6, idx1, idx2);
         vst1q_u32(&a_choice[rem], cho_1);
         vst1q_u32(&a_mid[rem], mid_1);
         vst1q_u32(&a_diag1[rem], d1_1);
@@ -223,6 +249,46 @@ int next_step(SubProbs &a, SubProbs &b, int from, int to, uint32_t canplace) {
         vst1q_u32(&b_diag1[off], nxt_d1_2);
         vst1q_u32(&b_diag2[off], nxt_d2_2);
         off += len2;
+
+        cho_1 = lookup_u32(cho_3, idx3);
+        cho_2 = lookup_u32(cho_4, idx4);
+        mid_1 = lookup_u32(mid_3, idx3);
+        mid_2 = lookup_u32(mid_4, idx4);
+        d1_1 = lookup_u32(d1_3, idx3);
+        d1_2 = lookup_u32(d1_4, idx4);
+        d2_1 = lookup_u32(d2_3, idx3);
+        d2_2 = lookup_u32(d2_4, idx4);
+
+        nxt_cho_1 = lookup_u32(nxt_cho_3, idx1);
+        nxt_cho_2 = lookup_u32(nxt_cho_4, idx2);
+        nxt_mid_1 = lookup_u32(nxt_mid_3, idx1);
+        nxt_mid_2 = lookup_u32(nxt_mid_4, idx2);
+        nxt_d1_1 = lookup_u32(nxt_d1_3, idx1);
+        nxt_d1_2 = lookup_u32(nxt_d1_4, idx2);
+        nxt_d2_1 = lookup_u32(nxt_d2_3, idx1);
+        nxt_d2_2 = lookup_u32(nxt_d2_4, idx2);
+
+        vst1q_u32(&a_choice[rem], cho_1);
+        vst1q_u32(&a_mid[rem], mid_1);
+        vst1q_u32(&a_diag1[rem], d1_1);
+        vst1q_u32(&a_diag2[rem], d2_1);
+        rem += len7;
+        vst1q_u32(&a_choice[rem], cho_2);
+        vst1q_u32(&a_mid[rem], mid_2);
+        vst1q_u32(&a_diag1[rem], d1_2);
+        vst1q_u32(&a_diag2[rem], d2_2);
+        rem += len8;
+
+        vst1q_u32(&b_choice[off], nxt_cho_1);
+        vst1q_u32(&b_mid[off], nxt_mid_1);
+        vst1q_u32(&b_diag1[off], nxt_d1_1);
+        vst1q_u32(&b_diag2[off], nxt_d2_1);
+        off += len5;
+        vst1q_u32(&b_choice[off], nxt_cho_2);
+        vst1q_u32(&b_mid[off], nxt_mid_2);
+        vst1q_u32(&b_diag1[off], nxt_d1_2);
+        vst1q_u32(&b_diag2[off], nxt_d2_2);
+        off += len6;
     }
     for (; i < to; i++) {
         uint32_t cho = a_choice[i];
@@ -278,7 +344,6 @@ long long solve(int n, const uint32_t *mask, SubProbs in, int page) {
         probs[lv].cnt = rem + all - has;*/
         probs[lv].cnt = rem;
         if (probs[lv].cnt == 0 && lv == depleted) depleted++;
-        ans += has;
 
         //printf("lv=%d added=%d rem=%d depleted=%d cnt=%d,%d\n", lv, now-prev, rem, depleted, probs[lv].cnt, probs[lv+1].cnt);
 
@@ -286,7 +351,7 @@ long long solve(int n, const uint32_t *mask, SubProbs in, int page) {
         else while (probs[lv+1].cnt >= page || lv+1 == depleted) {
             lv += 1;
             if (lv == n-1) {
-                //ans += probs[n-1].cnt;
+                ans += probs[n-1].cnt;
                 probs[n-1].cnt = 0;
                 lv -= 1;
                 break;
