@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <vector>
 #include <cstdint>
+#ifdef _WIN32
+#include <intrin.h>
+#endif
 
 typedef std::pair<int,int> coord;
 
@@ -13,6 +16,26 @@ char name[12] = {
   'I', 'L', 'N', 'Y', 'P', 'U',
   'V', 'W', 'Z', 'T', 'F', 'X'
 };
+
+int ctzll(uint64_t num) {
+#if __GNUC__
+  return __builtin_ctzll(num);
+#elif _WIN64
+  unsigned long ans = 0;
+  if (_BitScanForward64(&ans, num)) {
+    return ans;
+  }
+  return 64;
+#else
+  unsigned long ans = 0;
+  for (ans = 0; ans < 64; ans++) {
+    if (num>>ans & 1) {
+      return ans;
+    }
+  }
+  return ans;
+#endif
+}
 
 struct SS {
   std::pair<int, int> p[5];
@@ -68,7 +91,7 @@ void solve(uint64_t space, unsigned unused, int &ans) {
     return;
   }
   ans ++;
-  int choose = __builtin_ctzll(space);
+  int choose = ctzll(space);
   for (int i = 0; i < 12; i++) {
     if (unused >> i & 1) {
       for (uint64_t m : imagelist[choose][i]) {
@@ -90,7 +113,7 @@ void solve_bfs(uint64_t space, unsigned unused, int &ans) {
       space = cur_space[i];
       unused = cur_unused[i];
       ans++;
-      int choose = __builtin_ctzll(space);
+      int choose = ctzll(space);
       for (int j = 0; j < 12; j++) {
         if (unused >> j & 1) {
           for (uint64_t m : imagelist[choose][j]) {
@@ -169,7 +192,7 @@ int main() {
             bset += 1ULL<<(yy *width + xx);
           }
           //printf("%d %d %llx\n", i, __builtin_ctzll(bset), bset);
-          imagelist[__builtin_ctzll(bset)][i].push_back(bset);
+          imagelist[ctzll(bset)][i].push_back(bset);
         }
       }
       id++;
