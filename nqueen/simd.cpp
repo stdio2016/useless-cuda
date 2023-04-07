@@ -5,6 +5,12 @@
 #include <algorithm>
 #include <cstring>
 
+#ifdef _MSC_VER
+#define POPCNT __popcnt
+#else
+#define POPCNT __builtin_popcount
+#endif
+
 typedef unsigned int uint;
 class Timing {
 public:
@@ -57,11 +63,11 @@ int avx2_compaction(int n, uint *mask, uint *dat, const __m256i *shuffle_table) 
     __m256i m = _mm256_loadu_si256((__m256i*)&mask[i]);
     __m256i d = _mm256_loadu_si256((__m256i*)&dat[i]);
     __m256i zer = _mm256_cmpeq_epi32(m, _mm256_setzero_si256());
-    int sel = _mm256_movemask_ps((__m256)zer);
+    int sel = _mm256_movemask_ps(_mm256_castsi256_ps(zer));
     __m256i idx = _mm256_load_si256(&shuffle_table[sel]);
-    __m256i out = (__m256i)_mm256_permutevar8x32_ps((__m256)d, idx);
+    __m256i out = _mm256_permutevar8x32_epi32(d, idx);
     _mm256_storeu_si256((__m256i*)&dat[cnt], out);
-    cnt += __builtin_popcount(255-sel);
+    cnt += POPCNT(255-sel);
   }
   for (; i < n; i++) {
     if (mask[i]) {
@@ -101,32 +107,32 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint canplace, const __m256i *s
     __m256i nxt_cho = _mm256_andnot_si256(_mm256_or_si256(_mm256_or_si256(nxt_mid, nxt_d1), nxt_d2), can);
     
     __m256i zer = _mm256_cmpeq_epi32(nxt_cho, _mm256_setzero_si256());
-    int sel = _mm256_movemask_ps((__m256)zer);
+    int sel = _mm256_movemask_ps(_mm256_castsi256_ps(zer));
     __m256i idx = _mm256_load_si256(&shuffle_table[sel]);
-    nxt_cho = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_cho, idx);
-    nxt_mid = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_mid, idx);
-    nxt_d1 = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_d1, idx);
-    nxt_d2 = (__m256i)_mm256_permutevar8x32_ps((__m256)nxt_d2, idx);
+    nxt_cho = _mm256_permutevar8x32_epi32(nxt_cho, idx);
+    nxt_mid = _mm256_permutevar8x32_epi32(nxt_mid, idx);
+    nxt_d1 = _mm256_permutevar8x32_epi32(nxt_d1, idx);
+    nxt_d2 = _mm256_permutevar8x32_epi32(nxt_d2, idx);
     
     _mm256_storeu_si256((__m256i*)&b.choice[off], nxt_cho);
     _mm256_storeu_si256((__m256i*)&b.mid[off], nxt_mid);
     _mm256_storeu_si256((__m256i*)&b.diag1[off], nxt_d1);
     _mm256_storeu_si256((__m256i*)&b.diag2[off], nxt_d2);
-    off += __builtin_popcount(255-sel);
+    off += POPCNT(255-sel);
     
     zer = _mm256_cmpeq_epi32(cho, _mm256_setzero_si256());
-    sel = _mm256_movemask_ps((__m256)zer);
+    sel = _mm256_movemask_ps(_mm256_castsi256_ps(zer));
     idx = _mm256_load_si256(&shuffle_table[sel]);
-    cho = (__m256i)_mm256_permutevar8x32_ps((__m256)cho, idx);
-    mid = (__m256i)_mm256_permutevar8x32_ps((__m256)mid, idx);
-    d1 = (__m256i)_mm256_permutevar8x32_ps((__m256)d1, idx);
-    d2 = (__m256i)_mm256_permutevar8x32_ps((__m256)d2, idx);
+    cho = _mm256_permutevar8x32_epi32(cho, idx);
+    mid = _mm256_permutevar8x32_epi32(mid, idx);
+    d1 = _mm256_permutevar8x32_epi32(d1, idx);
+    d2 = _mm256_permutevar8x32_epi32(d2, idx);
     
     _mm256_storeu_si256((__m256i*)&a.choice[rem], cho);
     _mm256_storeu_si256((__m256i*)&a.mid[rem], mid);
     _mm256_storeu_si256((__m256i*)&a.diag1[rem], d1);
     _mm256_storeu_si256((__m256i*)&a.diag2[rem], d2);
-    rem += __builtin_popcount(255-sel);
+    rem += POPCNT(255-sel);
   }
   for (; i < num; i++) {
     uint cho = a.choice[i];
