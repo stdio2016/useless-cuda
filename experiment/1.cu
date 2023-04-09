@@ -9,7 +9,7 @@ __device__ void waitClockGpu(int time) {
         ;
     }
 }
-__global__ void concurrency_test(__global__ int *max_concurrency) {
+__global__ void concurrency_test(int *max_concurrency) {
     atomicAdd(&current_concurrency, 1);
     waitClockGpu(1000000);
     atomicMax(max_concurrency, current_concurrency);
