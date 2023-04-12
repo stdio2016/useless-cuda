@@ -218,14 +218,14 @@ int main() {
   cudaEvent_t event1, event2;
   cudaEventCreate(&event1);
   cudaEventCreate(&event2);
-  cudaEventRecord(event1, 0);
   cudaMalloc(&gpu_imglist, sizeof(uint64_t) * flatimglist.size());
   cudaMalloc(&gpu_imgpos, sizeof(int) * imgpos.size());
-  cudaMalloc(&gpu_space1, sizeof(uint64_t) * 2560000);
-  cudaMalloc(&gpu_space2, sizeof(uint64_t) * 2560000);
-  cudaMalloc(&gpu_unused1, sizeof(int) * 2560000);
-  cudaMalloc(&gpu_unused2, sizeof(int) * 2560000);
+  cudaMalloc(&gpu_space1, sizeof(uint64_t) * 1000000);
+  cudaMalloc(&gpu_space2, sizeof(uint64_t) * 1000000);
+  cudaMalloc(&gpu_unused1, sizeof(int) * 1000000);
+  cudaMalloc(&gpu_unused2, sizeof(int) * 1000000);
   cudaMalloc(&gpu_next, sizeof(int));
+  cudaEventRecord(event1, 0);
   cudaMemcpy(gpu_imglist, &flatimglist[0], sizeof(uint64_t) * flatimglist.size(), cudaMemcpyHostToDevice);
   cudaMemcpy(gpu_imgpos, &imgpos[0], sizeof(int) * imgpos.size(), cudaMemcpyHostToDevice);
   int ans=0;
@@ -245,10 +245,10 @@ int main() {
   cudaMemset(gpu_next, 0, sizeof(int));
 
   for (int step = 2; step <= 12; step++) {
-    solve_gpu<<<10000,256>>>(gpu_imglist, gpu_imgpos,
+    solve_gpu<<<4000,256>>>(gpu_imglist, gpu_imgpos,
       gpu_space1, gpu_unused1, gpu_space2, gpu_unused2, ans, gpu_next);
     cudaMemcpy(&ans, gpu_next, sizeof(int), cudaMemcpyDeviceToHost);
-    printf("step=%d n_next=%d\n", step, ans);
+    //printf("step=%d n_next=%d\n", step, ans);
     std::swap(gpu_space1, gpu_space2);
     std::swap(gpu_unused1, gpu_unused2);
     cudaMemset(gpu_next, 0, sizeof(int));
