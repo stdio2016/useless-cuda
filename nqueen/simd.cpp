@@ -89,12 +89,12 @@ int compaction(int n, uint *mask, uint *dat) {
   return cnt;
 }
 
-int next_step(SubProbs &a, SubProbs &b, int num, uint canplace, const __m256i *shuffle_table) {
+int next_step(SubProbs &a, SubProbs &b, int from, int to, uint canplace, const __m256i *shuffle_table) {
   int off = b.cnt;
   int i;
-  int rem = 0;
+  int rem = from;
   __m256i can = _mm256_set1_epi32(canplace);
-  for (i = 0; i+8 <= num; i += 8) {
+  for (i = from; i+8 <= to; i += 8) {
     __m256i cho = _mm256_loadu_si256((__m256i*)&a.choice[i]);
     __m256i mid = _mm256_loadu_si256((__m256i*)&a.mid[i]);
     __m256i d1 = _mm256_loadu_si256((__m256i*)&a.diag1[i]);
@@ -134,7 +134,7 @@ int next_step(SubProbs &a, SubProbs &b, int num, uint canplace, const __m256i *s
     _mm256_storeu_si256((__m256i*)&a.diag2[rem], d2);
     rem += POPCNT(255-sel);
   }
-  for (; i < num; i++) {
+  for (; i < to; i++) {
     uint cho = a.choice[i];
     uint mid = a.mid[i];
     uint d1 = a.diag1[i];
@@ -175,17 +175,11 @@ int solve(int n, const uint *mask, SubProbs in, int page, const __m256i *table) 
   int depleted = 0;
   while (depleted < n-1) {
     int has = probs[lv].cnt;
+    int all = probs[lv].cnt;
     if (page < has) has = page;
     int prev = probs[lv+1].cnt;
-    int rem = next_step(probs[lv], probs[lv+1], has, mask[lv+1], table);
-    int all = probs[lv].cnt;
-    if (all > has) {
-      std::copy(&probs[lv].mid[has], &probs[lv].mid[all], &probs[lv].mid[rem]);
-      std::copy(&probs[lv].diag1[has], &probs[lv].diag1[all], &probs[lv].diag1[rem]);
-      std::copy(&probs[lv].diag2[has], &probs[lv].diag2[all], &probs[lv].diag2[rem]);
-      std::copy(&probs[lv].choice[has], &probs[lv].choice[all], &probs[lv].choice[rem]);
-    }
-    probs[lv].cnt = rem + all - has;
+    int rem = next_step(probs[lv], probs[lv+1], all - has, all, mask[lv+1], table);
+    probs[lv].cnt = rem;
     if (probs[lv].cnt == 0 && lv == depleted) depleted++;
 
     //printf("lv=%d added=%d rem=%d depleted=%d cnt=%d,%d\n", lv, now-prev, rem, depleted, probs[lv].cnt, probs[lv+1].cnt);
@@ -231,7 +225,7 @@ long long nqueen_parallel_avx2(int n, const uint *mask, const __m256i *shuffle_t
     gen2.cnt = 0;
     int rem = gen.cnt;
     while (rem > 0) {
-      rem = next_step(gen, gen2, gen.cnt, mask[unroll_lv], shuffle_table);
+      rem = next_step(gen, gen2, 0, gen.cnt, mask[unroll_lv], shuffle_table);
       gen.cnt = rem;
     }
     std::swap(gen, gen2);
